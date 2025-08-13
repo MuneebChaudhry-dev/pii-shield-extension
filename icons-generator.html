@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PII Shield Icon Generator</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 40px;
+      background: #f5f5f5;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+
+    .icon-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 20px;
+      margin-top: 30px;
+    }
+
+    .icon-container {
+      text-align: center;
+      padding: 20px;
+      background: #f9f9f9;
+      border-radius: 8px;
+      position: relative;
+    }
+
+    .icon-container canvas {
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+
+    .icon-container canvas:hover {
+      transform: scale(1.05);
+    }
+
+    .icon-label {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    .instructions {
+      background: #e3f2fd;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      color: #1976d2;
+    }
+
+    button {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 20px;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🛡️ PII Shield - Extension Icons</h1>
+
+    <div class="instructions">
+      <strong>Instructions:</strong> Click on each icon to download it. Save them in an "icons" folder in your extension
+      directory.
+    </div>
+
+    <div class="icon-grid">
+      <div class="icon-container">
+        <canvas id="icon16" width="16" height="16"></canvas>
+        <div class="icon-label">icon16.png</div>
+      </div>
+
+      <div class="icon-container">
+        <canvas id="icon32" width="32" height="32"></canvas>
+        <div class="icon-label">icon32.png</div>
+      </div>
+
+      <div class="icon-container">
+        <canvas id="icon48" width="48" height="48"></canvas>
+        <div class="icon-label">icon48.png</div>
+      </div>
+
+      <div class="icon-container">
+        <canvas id="icon128" width="128" height="128"></canvas>
+        <div class="icon-label">icon128.png</div>
+      </div>
+    </div>
+
+    <button type="button" onclick="downloadAll()">Download All Icons</button>
+  </div>
+
+  <script>
+    // Function to draw the shield icon
+    function drawShieldIcon(canvas, size) {
+      const ctx = canvas.getContext('2d');
+      const scale = size / 128;
+
+      // Clear canvas
+      ctx.clearRect(0, 0, size, size);
+
+      // Enable smooth rendering
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      // Create gradient background
+      const gradient = ctx.createLinearGradient(0, 0, size, size);
+      gradient.addColorStop(0, '#3b82f6');
+      gradient.addColorStop(1, '#2563eb');
+
+      // Draw rounded rectangle background
+      const radius = size * 0.2;
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.moveTo(radius, 0);
+      ctx.lineTo(size - radius, 0);
+      ctx.quadraticCurveTo(size, 0, size, radius);
+      ctx.lineTo(size, size - radius);
+      ctx.quadraticCurveTo(size, size, size - radius, size);
+      ctx.lineTo(radius, size);
+      ctx.quadraticCurveTo(0, size, 0, size - radius);
+      ctx.lineTo(0, radius);
+      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      // Draw shield shape
+      ctx.save();
+      ctx.translate(size / 2, size / 2);
+      ctx.scale(scale, scale);
+
+      ctx.strokeStyle = 'white';
+      ctx.fillStyle = 'white';
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // Shield path
+      ctx.beginPath();
+      ctx.moveTo(0, -40);
+      ctx.bezierCurveTo(-35, -40, -35, -10, -35, 0);
+      ctx.bezierCurveTo(-35, 20, -20, 35, 0, 50);
+      ctx.bezierCurveTo(20, 35, 35, 20, 35, 0);
+      ctx.bezierCurveTo(35, -10, 35, -40, 0, -40);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.globalAlpha = 0.2;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Draw lock icon inside shield
+      ctx.lineWidth = 6;
+
+      // Lock body
+      ctx.beginPath();
+      ctx.rect(-12, -5, 24, 20);
+      ctx.stroke();
+      ctx.globalAlpha = 0.3;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Lock shackle
+      ctx.beginPath();
+      ctx.arc(0, -5, 10, Math.PI, 0, false);
+      ctx.stroke();
+
+      // Keyhole
+      ctx.beginPath();
+      ctx.arc(0, 3, 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+
+      // Add subtle shadow effect for larger icons
+      if (size >= 48) {
+        ctx.globalAlpha = 0.1;
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(size / 2 + 2, size / 2 + 2, size / 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Generate all icons
+    const sizes = [16, 32, 48, 128];
+    sizes.forEach(size => {
+      const canvas = document.getElementById(`icon${size}`);
+      drawShieldIcon(canvas, size);
+
+      // Add click to download
+      canvas.addEventListener('click', () => {
+        downloadIcon(canvas, `icon${size}.png`);
+      });
+    });
+
+    // Download icon function
+    function downloadIcon(canvas, filename) {
+      canvas.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Download all icons
+    function downloadAll() {
+      sizes.forEach(size => {
+        const canvas = document.getElementById(`icon${size}`);
+        setTimeout(() => {
+          downloadIcon(canvas, `icon${size}.png`);
+        }, size * 100); // Stagger downloads
+      });
+    }
+  </script>
+</body>
+
+</html>
