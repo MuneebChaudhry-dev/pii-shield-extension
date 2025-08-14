@@ -6,7 +6,7 @@
   "permissions": ["activeTab", "storage", "scripting", "contextMenus", "webNavigation"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
-    "service_worker": "backgound.js"
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {

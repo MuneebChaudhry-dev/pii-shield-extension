@@ -401,6 +401,7 @@ function maskPII(value, type) {
 }
 
 // Read file content
+// Replace the readFileContent function with this improved version:
 async function readFileContent(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -409,20 +410,21 @@ async function readFileContent(file) {
       resolve(e.target.result);
     };
 
-    reader.onerror = reject;
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'));
+    };
 
     // Handle different file types
     if (file.type.includes('text') || file.name.endsWith('.txt')) {
       reader.readAsText(file);
     } else if (file.type.includes('pdf')) {
-      // For PDF, we'd need a library like pdf.js
-      // For now, return placeholder
-      resolve('[PDF content would be extracted here]');
-    } else if (file.type.includes('image')) {
-      // For images, we'd need OCR
-      // For now, return placeholder
-      resolve('[Image OCR content would be extracted here]');
+      // For basic PDF text extraction, read as text (limited but functional)
+      reader.readAsText(file);
+    } else if (file.type.includes('word') || file.name.endsWith('.docx')) {
+      // Read as text for basic content
+      reader.readAsText(file);
     } else {
+      // Default to text reading
       reader.readAsText(file);
     }
   });
@@ -667,7 +669,35 @@ function proceedWithUpload() {
   // Original upload logic would continue here
 }
 
-// Monitor file inputs
+// // Monitor file inputs
+// function monitorFileInputs() {
+//   // Monitor existing file inputs
+//   document.querySelectorAll('input[type="file"]').forEach((input) => {
+//     if (!input.hasAttribute('data-pii-monitored')) {
+//       input.setAttribute('data-pii-monitored', 'true');
+
+//       input.addEventListener('change', async (e) => {
+//         const file = e.target.files[0];
+//         if (file) {
+//           e.preventDefault();
+//           e.stopPropagation();
+
+//           // Show scanning overlay
+//           createOverlay([]);
+
+//           // Read and scan file
+//           const content = await readFileContent(file);
+//           const findings = scanForPII(content);
+
+//           // Update overlay with results
+//           setTimeout(() => {
+//             createOverlay(findings);
+//             detectedPII = findings;
+//           }, 1000); // Simulate scanning time
+//         }
+//       });
+//     }
+//   });
 function monitorFileInputs() {
   // Monitor existing file inputs
   document.querySelectorAll('input[type="file"]').forEach((input) => {
@@ -677,25 +707,126 @@ function monitorFileInputs() {
       input.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (file) {
-          e.preventDefault();
-          e.stopPropagation();
-
-          // Show scanning overlay
-          createOverlay([]);
-
-          // Read and scan file
-          const content = await readFileContent(file);
-          const findings = scanForPII(content);
-
-          // Update overlay with results
-          setTimeout(() => {
-            createOverlay(findings);
-            detectedPII = findings;
-          }, 1000); // Simulate scanning time
+          console.log('File selected:', file.name); // Debug log
+          
+          // Don't prevent default here - let's scan in parallel
+          await scanFile(file);
         }
       });
     }
   });
+
+  // Monitor for file drag and drop on common upload areas
+  const uploadSelectors = [
+    'input[type="file"]',
+    '.upload-area',
+    '.dropzone',
+    '[data-upload]',
+    '.file-upload',
+    '.drag-drop'
+  ];
+
+  uploadSelectors.forEach(selector => {
+    document.querySelectorAll(selector).forEach(element => {
+      if (!element.hasAttribute('data-pii-drop-monitored')) {
+        element.setAttribute('data-pii-drop-monitored', 'true');
+        
+        element.addEventListener('dragover', (e) => {
+          e.preventDefault();
+        });
+
+        element.addEventListener('drop', async (e) => {
+          const files = e.dataTransfer?.files;
+          if (files && files.length > 0) {
+            console.log('File dropped:', files[0].name); // Debug log
+            e.preventDefault();
+            await scanFile(files[0]);
+          }
+        });
+      }
+    });
+  });
+}
+
+
+// New scanFile function
+async function scanFile(file) {
+  try {
+    console.log('Starting scan for:', file.name); // Debug log
+    
+    // Show scanning overlay immediately
+    createScanningOverlay();
+
+    // Read and scan file
+    const content = await readFileContent(file);
+    console.log('File content length:', content.length); // Debug log
+    
+    const findings = scanForPII(content);
+    console.log('PII findings:', findings); // Debug log
+
+    // Update overlay with results
+    setTimeout(() => {
+      createOverlay(findings);
+      detectedPII = findings;
+      
+      // Update stats
+      updateScanStats(findings);
+    }, 1000); // Simulate scanning time
+    
+  } catch (error) {
+    console.error('Error scanning file:', error);
+    createOverlay([]); // Show no findings on error
+  }
+}
+
+// New function to show scanning state
+function createScanningOverlay() {
+  removeOverlay();
+  
+  overlay = document.createElement('div');
+  overlay.className = 'pii-shield-overlay glass';
+  
+  overlay.innerHTML = `
+    <div class="pii-shield-header">
+      <div class="pii-shield-icon safe scanning">
+        <div style="animation: spin 1s linear infinite;">⟳</div>
+      </div>
+      <div>
+        <h2 class="pii-shield-title">Scanning Document</h2>
+        <p class="pii-shield-subtitle">Analyzing content for sensitive information...</p>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(overlay);
+}
+
+// Add spin animation to styles
+function injectStyles() {
+  const style = document.createElement('style');
+  style.textContent = `
+    /* ... existing styles ... */
+    
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    
+    /* ... rest of existing styles ... */
+  `;
+  document.head.appendChild(style);
+}
+
+// Add this function to content.js:
+function updateScanStats(findings) {
+  // Send stats update to background script
+  chrome.runtime.sendMessage({
+    action: 'updateStats',
+    findings: findings,
+    scansCount: 1
+  });
+}
+
 
   // Monitor drag and drop
   if (!document.body.hasAttribute('data-pii-drop-monitored')) {

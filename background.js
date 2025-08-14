@@ -166,6 +166,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       handleFileScan(request.fileData, sender.tab.id);
       sendResponse({ success: true });
       break;
+    // Add this to the message listener in background.js:
+    case 'updateStats':
+      // Update scan statistics
+      chrome.storage.local.get(['stats'], (data) => {
+        const today = new Date().toDateString();
+        let stats = data.stats || {
+          date: today,
+          scansToday: 0,
+          piiDetected: 0,
+          filesProtected: 0,
+        };
+
+        if (stats.date !== today) {
+          stats = {
+            date: today,
+            scansToday: 0,
+            piiDetected: 0,
+            filesProtected: 0,
+          };
+        }
+
+        stats.scansToday += request.scansCount || 1;
+        stats.piiDetected += request.findings?.length || 0;
+
+        chrome.storage.local.set({ stats });
+
+        // Notify popup if open
+        chrome.runtime
+          .sendMessage({
+            action: 'statsUpdated',
+            stats: stats,
+          })
+          .catch(() => {}); // Ignore if popup not open
+      });
+      break;
   }
 
   return true;
