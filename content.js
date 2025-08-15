@@ -560,7 +560,7 @@ function createOverlay(findings) {
             ? `
           <div class="pii-shield-stat">
             <div class="pii-shield-stat-value" style="color: #dc2626;">${severityCount.high}</div>
-            <div class="pii-shield-stat-label">High Risk</div>
+            <div class="pii-shield-stat-label">High</div>
           </div>
         `
             : ''
@@ -570,7 +570,7 @@ function createOverlay(findings) {
             ? `
           <div class="pii-shield-stat">
             <div class="pii-shield-stat-value" style="color: #d97706;">${severityCount.medium}</div>
-            <div class="pii-shield-stat-label">Medium Risk</div>
+            <div class="pii-shield-stat-label">Medium</div>
           </div>
         `
             : ''
@@ -580,7 +580,7 @@ function createOverlay(findings) {
             ? `
           <div class="pii-shield-stat">
             <div class="pii-shield-stat-value" style="color: #2563eb;">${severityCount.low}</div>
-            <div class="pii-shield-stat-label">Low Risk</div>
+            <div class="pii-shield-stat-label">Low</div>
           </div>
         `
             : ''
