@@ -68,6 +68,35 @@ let isScanning = false;
 let sidebar = null;
 let overlay = null;
 let detectedPII = [];
+let extensionSleeping = false;
+let bypassOverlay = null;
+let db = null; // Add IndexedDB reference
+
+// Initialize IndexedDB
+async function initDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('PIIShieldDB', 1);
+    
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      db = request.result;
+      resolve(db);
+    };
+    
+    request.onupgradeneeded = (event) => {
+      const database = event.target.result;
+      
+      // Create store for file exemptions
+      const exemptionsStore = database.createObjectStore('exemptions', { keyPath: 'id' });
+      exemptionsStore.createIndex('tabId', 'tabId', { unique: false });
+      exemptionsStore.createIndex('timestamp', 'timestamp', { unique: false });
+      
+      // Create store for tab exemptions
+      const tabsStore = database.createObjectStore('exemptedTabs', { keyPath: 'tabId' });
+      tabsStore.createIndex('timestamp', 'timestamp', { unique: false });
+    };
+  });
+}
 
 // Inject styles
 function injectStyles() {
@@ -371,7 +400,7 @@ function scanForPII(text) {
       if (matches) {
         // Remove duplicates
         const uniqueMatches = [...new Set(matches)];
-        
+
         uniqueMatches.forEach((match) => {
           // Additional validation for certain patterns
           if (isValidPII(match, config.type)) {
@@ -391,8 +420,12 @@ function scanForPII(text) {
   }
 
   // Remove duplicate findings
-  const uniqueFindings = findings.filter((finding, index, self) => 
-    index === self.findIndex(f => f.value === finding.value && f.type === finding.type)
+  const uniqueFindings = findings.filter(
+    (finding, index, self) =>
+      index ===
+      self.findIndex(
+        (f) => f.value === finding.value && f.type === finding.type
+      )
   );
 
   console.log('Unique findings:', uniqueFindings);
@@ -406,19 +439,23 @@ function isValidPII(value, type) {
       // Basic Luhn algorithm check
       const digits = value.replace(/\D/g, '');
       return digits.length >= 13 && digits.length <= 19;
-    
+
     case 'SSN':
       const ssnDigits = value.replace(/\D/g, '');
-      return ssnDigits.length === 9 && ssnDigits !== '000000000' && ssnDigits !== '123456789';
-    
+      return (
+        ssnDigits.length === 9 &&
+        ssnDigits !== '000000000' &&
+        ssnDigits !== '123456789'
+      );
+
     case 'BANK_ACCOUNT':
       const bankDigits = value.replace(/\D/g, '');
       return bankDigits.length >= 8 && bankDigits.length <= 17;
-    
+
     case 'EMAIL':
       // More strict email validation
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
-    
+
     default:
       return true;
   }
@@ -454,7 +491,7 @@ async function readFileContent(file) {
     reader.onload = (e) => {
       try {
         let content = e.target.result;
-        
+
         // Handle different file types
         if (file.type.includes('json')) {
           // Pretty print JSON for better scanning
@@ -465,7 +502,7 @@ async function readFileContent(file) {
             // If JSON parsing fails, use as text
           }
         }
-        
+
         console.log('File content sample:', content.substring(0, 500));
         resolve(content);
       } catch (error) {
@@ -478,11 +515,13 @@ async function readFileContent(file) {
     };
 
     // Handle different file types
-    if (file.type.includes('text') || 
-        file.name.endsWith('.txt') || 
-        file.name.endsWith('.csv') ||
-        file.name.endsWith('.json') ||
-        file.type.includes('json')) {
+    if (
+      file.type.includes('text') ||
+      file.name.endsWith('.txt') ||
+      file.name.endsWith('.csv') ||
+      file.name.endsWith('.json') ||
+      file.type.includes('json')
+    ) {
       reader.readAsText(file);
     } else if (file.type.includes('pdf')) {
       // For PDF, we'll read as text - this won't work perfectly but will catch some cases
@@ -705,10 +744,10 @@ function showSidebar(findings) {
     btn.style.opacity = '0.5';
   });
 
-document.getElementById('ready-upload')?.addEventListener('click', () => {
-  removeSidebar();
-  proceedWithOriginalUpload(); // Change this from proceedWithUpload()
-});
+  document.getElementById('ready-upload')?.addEventListener('click', () => {
+    removeSidebar();
+    proceedWithOriginalUpload(); // Change this from proceedWithUpload()
+  });
 }
 
 // Remove overlay
@@ -767,20 +806,32 @@ function proceedWithUpload() {
 //     }
 //   });
 function monitorFileInputs() {
+  if (extensionSleeping) {
+    console.log('Extension is sleeping - skipping file monitoring setup');
+    return;
+  }
+
+  // Monitor existing file inputs
   // Monitor existing file inputs
   document.querySelectorAll('input[type="file"]').forEach((input) => {
     if (!input.hasAttribute('data-pii-monitored')) {
       input.setAttribute('data-pii-monitored', 'true');
 
       input.addEventListener('change', async (e) => {
+        // Double-check sleep state when event fires
+        if (extensionSleeping) {
+          console.log('Extension is sleeping - allowing normal upload');
+          return; // Let the upload proceed normally
+        }
+
         const file = e.target.files[0];
         if (file) {
-          console.log('File selected:', file.name); // Debug log
-          
+          console.log('File selected:', file.name);
+
           // Prevent default upload behavior initially
           e.preventDefault();
           e.stopPropagation();
-          
+
           // Scan the file with the original event
           await scanFile(file, e);
         }
@@ -795,14 +846,14 @@ function monitorFileInputs() {
     '.dropzone',
     '[data-upload]',
     '.file-upload',
-    '.drag-drop'
+    '.drag-drop',
   ];
 
-  uploadSelectors.forEach(selector => {
-    document.querySelectorAll(selector).forEach(element => {
+  uploadSelectors.forEach((selector) => {
+    document.querySelectorAll(selector).forEach((element) => {
       if (!element.hasAttribute('data-pii-drop-monitored')) {
         element.setAttribute('data-pii-drop-monitored', 'true');
-        
+
         element.addEventListener('dragover', (e) => {
           e.preventDefault();
         });
@@ -813,14 +864,14 @@ function monitorFileInputs() {
             console.log('File dropped:', files[0].name); // Debug log
             e.preventDefault();
             e.stopPropagation();
-            
+
             // Store the drop event details for later use
             const dropEvent = {
               target: e.target,
               dataTransfer: e.dataTransfer,
-              type: 'drop'
+              type: 'drop',
             };
-            
+
             await scanFile(files[0], dropEvent);
           }
         });
@@ -829,12 +880,11 @@ function monitorFileInputs() {
   });
 }
 
-
 // New scanFile function
 async function scanFile(file, originalEvent = null) {
   try {
     console.log('Starting scan for:', file.name); // Debug log
-    
+
     // Show scanning overlay immediately
     createScanningOverlay();
 
@@ -842,7 +892,7 @@ async function scanFile(file, originalEvent = null) {
     const content = await readFileContent(file);
     console.log('File content length:', content.length); // Debug log
     console.log('File content preview:', content.substring(0, 200)); // Debug log
-    
+
     const findings = scanForPII(content);
     console.log('PII findings:', findings); // Debug log
 
@@ -856,17 +906,15 @@ async function scanFile(file, originalEvent = null) {
     setTimeout(() => {
       updateOverlayWithResults(findings);
       detectedPII = findings;
-      
+
       // Update stats
       updateScanStats(findings);
     }, 1500); // Realistic scanning time
-    
   } catch (error) {
     console.error('Error scanning file:', error);
     updateOverlayWithResults([]); // Show no findings on error
   }
 }
-
 
 // New function to update overlay with results (prevents duplicate overlays)
 function updateOverlayWithResults(findings) {
@@ -968,7 +1016,7 @@ function updateOverlayWithResults(findings) {
         totalFindings > 0
           ? `
         <button class="pii-shield-btn danger" id="skip-upload">
-          Skip & Upload
+         Allow Upload
         </button>
         <button class="pii-shield-btn primary" id="view-details">
           View Details
@@ -1008,44 +1056,105 @@ function attachOverlayEventListeners(findings, hasPII) {
 }
 
 // Fix the actual file upload process
+// Implement temporary bypass approach
 function proceedWithOriginalUpload() {
-  console.log('Proceeding with original upload...');
+  console.log('User wants to upload - implementing temporary bypass');
   
-  // If we have the original event and file, trigger the upload
-  if (window.piiShieldOriginalEvent && window.piiShieldOriginalFile) {
-    const originalInput = window.piiShieldOriginalEvent.target;
-    
-    // Create a new file list with our file
-    const dataTransfer = new DataTransfer();
-    dataTransfer.items.add(window.piiShieldOriginalFile);
-    originalInput.files = dataTransfer.files;
-    
-    // Temporarily remove our monitoring to avoid recursion
-    originalInput.removeAttribute('data-pii-monitored');
-    
-    // Trigger change event to proceed with upload
-    const changeEvent = new Event('change', { bubbles: true });
-    originalInput.dispatchEvent(changeEvent);
-    
-    // Re-add monitoring after a delay
-    setTimeout(() => {
-      originalInput.setAttribute('data-pii-monitored', 'true');
-    }, 1000);
-    
-    // Clean up
+  // 1. Put extension to sleep
+  extensionSleeping = true;
+  
+  // 2. Remove all monitoring temporarily
+  document.querySelectorAll('[data-pii-monitored]').forEach(input => {
+    input.removeAttribute('data-pii-monitored');
+  });
+  
+  // 3. Show bypass instructions to user
+  showBypassMessage();
+  
+  // 4. Wake up after 5 seconds
+  setTimeout(() => {
+    extensionSleeping = false;
+    removeBypassMessage();
+    monitorFileInputs(); // Re-enable monitoring
+    console.log('Extension monitoring resumed');
+  }, 15000);
+  
+  // 5. Clean up stored event data
+  if (window.piiShieldOriginalEvent) {
     delete window.piiShieldOriginalEvent;
+  }
+  if (window.piiShieldOriginalFile) {
     delete window.piiShieldOriginalFile;
   }
 }
 
-// New function to show scanning state
+// Show bypass instruction message
+function showBypassMessage() {
+  removeBypassMessage(); // Remove any existing message
+  
+  bypassOverlay = document.createElement('div');
+  bypassOverlay.className = 'pii-shield-overlay glass';
+  
+  bypassOverlay.innerHTML = `
+    <div class="pii-shield-header">
+      <div class="pii-shield-icon safe">
+        <div style="animation: pulse 2s ease-in-out infinite;">⏸</div>
+      </div>
+      <div>
+        <h2 class="pii-shield-title">Upload Monitoring Paused</h2>
+        <p class="pii-shield-subtitle">Please upload your file again normally</p>
+      </div>
+    </div>
+    
+    <div style="text-align: center; padding: 20px;">
+      <div style="background: rgba(16, 185, 129, 0.1); padding: 16px; border-radius: 12px; margin-bottom: 16px;">
+        <p style="color: #059669; font-weight: 500; margin-bottom: 8px;">📎 Instructions:</p>
+        <p style="color: #047857; font-size: 14px; line-height: 1.5;">
+          Click the attachment/upload button again and select your file. 
+          The extension will not interfere with this upload.
+        </p>
+      </div>
+      
+      <div style="background: #e5e7eb; border-radius: 8px; height: 4px; overflow: hidden;">
+        <div style="width: 100%; height: 100%; background: linear-gradient(135deg, #10b981, #059669); border-radius: 8px; animation: bypassCountdown 5s linear;"></div>
+      </div>
+      <p style="margin-top: 12px; font-size: 13px; color: #6b7280;">
+        Monitoring will resume automatically in 5 seconds
+      </p>
+    </div>
+    
+    <div class="pii-shield-actions">
+      <button class="pii-shield-btn secondary" id="cancel-bypass" style="width: 100%;">
+        Cancel & Resume Monitoring
+      </button>
+    </div>
+  `;
+  
+  document.body.appendChild(bypassOverlay);
+  
+  // Add cancel button functionality
+  document.getElementById('cancel-bypass')?.addEventListener('click', () => {
+    extensionSleeping = false;
+    removeBypassMessage();
+    monitorFileInputs(); // Re-enable monitoring immediately
+    console.log('Bypass cancelled - monitoring resumed');
+  });
+}
+
+// Remove bypass message
+function removeBypassMessage() {
+  if (bypassOverlay) {
+    bypassOverlay.remove();
+    bypassOverlay = null;
+  }
+}
 // New function to show scanning state
 function createScanningOverlay() {
   removeOverlay();
-  
+
   overlay = document.createElement('div');
   overlay.className = 'pii-shield-overlay glass';
-  
+
   overlay.innerHTML = `
     <div class="pii-shield-header">
       <div class="pii-shield-icon safe scanning">
@@ -1064,7 +1173,7 @@ function createScanningOverlay() {
       <p style="margin-top: 12px; font-size: 13px; color: #6b7280;">Please wait while we analyze your document...</p>
     </div>
   `;
-  
+
   document.body.appendChild(overlay);
 }
 
@@ -1358,6 +1467,11 @@ function injectStyles() {
       display: inline-block;
       animation: pulse 1.5s ease-in-out infinite;
     }
+      // Add this animation to your existing CSS in injectStyles()
+      @keyframes bypassCountdown {
+        from { width: 100%; }
+        to { width: 0%; }
+      }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -1373,51 +1487,49 @@ function updateScanStats(findings) {
   chrome.runtime.sendMessage({
     action: 'updateStats',
     findings: findings,
-    scansCount: 1
+    scansCount: 1,
   });
 }
 
+// Monitor drag and drop
+// if (!document.body.hasAttribute('data-pii-drop-monitored')) {
+//   document.body.setAttribute('data-pii-drop-monitored', 'true');
 
-  // Monitor drag and drop
-  // if (!document.body.hasAttribute('data-pii-drop-monitored')) {
-  //   document.body.setAttribute('data-pii-drop-monitored', 'true');
+//   document.body.addEventListener('drop', async (e) => {
+//     const files = e.dataTransfer?.files;
+//     if (files && files.length > 0) {
+//       const file = files[0];
 
-  //   document.body.addEventListener('drop', async (e) => {
-  //     const files = e.dataTransfer?.files;
-  //     if (files && files.length > 0) {
-  //       const file = files[0];
+//       // Check if this is a file upload area
+//       const target = e.target;
+//       const isUploadArea =
+//         target.matches(
+//           'input[type="file"], .upload-area, .dropzone, [data-upload]'
+//         ) || target.closest('.upload-area, .dropzone, [data-upload]');
 
-  //       // Check if this is a file upload area
-  //       const target = e.target;
-  //       const isUploadArea =
-  //         target.matches(
-  //           'input[type="file"], .upload-area, .dropzone, [data-upload]'
-  //         ) || target.closest('.upload-area, .dropzone, [data-upload]');
+//       if (isUploadArea) {
+//         e.preventDefault();
+//         e.stopPropagation();
 
-  //       if (isUploadArea) {
-  //         e.preventDefault();
-  //         e.stopPropagation();
+//         // Show scanning overlay
+//         createOverlay([]);
 
-  //         // Show scanning overlay
-  //         createOverlay([]);
+//         // Read and scan file
+//         const content = await readFileContent(file);
+//         const findings = scanForPII(content);
 
-  //         // Read and scan file
-  //         const content = await readFileContent(file);
-  //         const findings = scanForPII(content);
+//         // Update overlay with results
+//         setTimeout(() => {
+//           createOverlay(findings);
+//           detectedPII = findings;
+//         }, 1000);
+//       }
+//     }
+//   });
 
-  //         // Update overlay with results
-  //         setTimeout(() => {
-  //           createOverlay(findings);
-  //           detectedPII = findings;
-  //         }, 1000);
-  //       }
-  //     }
-  //   });
+// }
 
-  // }
-
-
-  // Add this function to content.js for debugging:
+// Add this function to content.js for debugging:
 function testPIIPatterns() {
   const testText = `
     Test Document Content:
@@ -1431,26 +1543,167 @@ function testPIIPatterns() {
     IP: 192.168.1.1
     Date: 01/15/1990
   `;
-  
+
   console.log('Testing PII patterns with sample text:');
   console.log(testText);
-  
+
   const findings = scanForPII(testText);
   console.log('Test PII scan results:', findings);
-  
+
   if (findings.length > 0) {
     createOverlay(findings);
   } else {
     console.log('No PII detected in test');
   }
-  
+
   return findings;
 }
 
 // Expose test function globally for debugging
 window.testPIIShield = testPIIPatterns;
 
-// Initialize
+
+
+// Get current tab ID
+function getCurrentTabId() {
+  return window.location.href + window.location.search;
+}
+
+// Generate file signature
+function getFileSignature(file) {
+  return `${file.name}_${file.size}_${file.lastModified}`;
+}
+
+// Check if file is exempted
+async function isFileExempted(file) {
+  if (!db) return false;
+  
+  const tabId = getCurrentTabId();
+  const fileSignature = getFileSignature(file);
+  const exemptionId = `${tabId}_${fileSignature}`;
+  
+  return new Promise((resolve) => {
+    const transaction = db.transaction(['exemptions'], 'readonly');
+    const store = transaction.objectStore('exemptions');
+    const request = store.get(exemptionId);
+    
+    request.onsuccess = () => {
+      if (request.result) {
+        // Check if exemption is still valid (within 10 minutes)
+        const exemptionAge = Date.now() - request.result.timestamp;
+        const isValid = exemptionAge < 10 * 60 * 1000; // 10 minutes
+        resolve(isValid);
+      } else {
+        resolve(false);
+      }
+    };
+    
+    request.onerror = () => resolve(false);
+  });
+}
+
+// Check if tab is exempted
+async function isTabExempted() {
+  if (!db) return false;
+  
+  const tabId = getCurrentTabId();
+  
+  return new Promise((resolve) => {
+    const transaction = db.transaction(['exemptedTabs'], 'readonly');
+    const store = transaction.objectStore('exemptedTabs');
+    const request = store.get(tabId);
+    
+    request.onsuccess = () => {
+      if (request.result) {
+        // Check if exemption is still valid (within 10 minutes)
+        const exemptionAge = Date.now() - request.result.timestamp;
+        const isValid = exemptionAge < 10 * 60 * 1000; // 10 minutes
+        resolve(isValid);
+      } else {
+        resolve(false);
+      }
+    };
+    
+    request.onerror = () => resolve(false);
+  });
+}
+
+// Add file exemption
+async function addFileExemption(file) {
+  if (!db) return;
+  
+  const tabId = getCurrentTabId();
+  const fileSignature = getFileSignature(file);
+  const exemptionId = `${tabId}_${fileSignature}`;
+  
+  const transaction = db.transaction(['exemptions'], 'readwrite');
+  const store = transaction.objectStore('exemptions');
+  
+  store.put({
+    id: exemptionId,
+    tabId: tabId,
+    fileSignature: fileSignature,
+    fileName: file.name,
+    timestamp: Date.now()
+  });
+}
+
+// Add tab exemption
+async function addTabExemption() {
+  if (!db) return;
+  
+  const tabId = getCurrentTabId();
+  
+  const transaction = db.transaction(['exemptedTabs'], 'readwrite');
+  const store = transaction.objectStore('exemptedTabs');
+  
+  store.put({
+    tabId: tabId,
+    timestamp: Date.now()
+  });
+}
+
+// Clean up old exemptions
+async function cleanupExemptions() {
+  if (!db) return;
+  
+  const cutoffTime = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+  
+  // Clean file exemptions
+  const transaction1 = db.transaction(['exemptions'], 'readwrite');
+  const store1 = transaction1.objectStore('exemptions');
+  const index1 = store1.index('timestamp');
+  const range1 = IDBKeyRange.upperBound(cutoffTime);
+  
+  index1.openCursor(range1).onsuccess = (event) => {
+    const cursor = event.target.result;
+    if (cursor) {
+      cursor.delete();
+      cursor.continue();
+    }
+  };
+  
+  // Clean tab exemptions
+  const transaction2 = db.transaction(['exemptedTabs'], 'readwrite');
+  const store2 = transaction2.objectStore('exemptedTabs');
+  const index2 = store2.index('timestamp');
+  const range2 = IDBKeyRange.upperBound(cutoffTime);
+  
+  index2.openCursor(range2).onsuccess = (event) => {
+    const cursor = event.target.result;
+    if (cursor) {
+      cursor.delete();
+      cursor.continue();
+    }
+  };
+}
+
+
+
+
+
+
+
 // Initialize
 function initialize() {
   // Wait for document.body to be available
