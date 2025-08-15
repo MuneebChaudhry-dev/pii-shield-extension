@@ -358,25 +358,70 @@ function injectStyles() {
 }
 
 // Scan text for PII
+// Scan text for PII
 function scanForPII(text) {
   const findings = [];
 
+  // Clean and normalize the text for better matching
+  const cleanText = text.replace(/\s+/g, ' ').trim();
+
   for (const [key, config] of Object.entries(PII_PATTERNS)) {
-    const matches = text.match(config.pattern);
-    if (matches) {
-      matches.forEach((match) => {
-        findings.push({
-          type: config.type,
-          label: config.label,
-          value: match,
-          severity: config.severity,
-          masked: maskPII(match, config.type),
+    try {
+      const matches = cleanText.match(config.pattern);
+      if (matches) {
+        // Remove duplicates
+        const uniqueMatches = [...new Set(matches)];
+        
+        uniqueMatches.forEach((match) => {
+          // Additional validation for certain patterns
+          if (isValidPII(match, config.type)) {
+            findings.push({
+              type: config.type,
+              label: config.label,
+              value: match.trim(),
+              severity: config.severity,
+              masked: maskPII(match.trim(), config.type),
+            });
+          }
         });
-      });
+      }
+    } catch (error) {
+      console.error(`Error scanning for ${key}:`, error);
     }
   }
 
-  return findings;
+  // Remove duplicate findings
+  const uniqueFindings = findings.filter((finding, index, self) => 
+    index === self.findIndex(f => f.value === finding.value && f.type === finding.type)
+  );
+
+  console.log('Unique findings:', uniqueFindings);
+  return uniqueFindings;
+}
+
+// Additional validation for PII patterns
+function isValidPII(value, type) {
+  switch (type) {
+    case 'CREDIT_CARD':
+      // Basic Luhn algorithm check
+      const digits = value.replace(/\D/g, '');
+      return digits.length >= 13 && digits.length <= 19;
+    
+    case 'SSN':
+      const ssnDigits = value.replace(/\D/g, '');
+      return ssnDigits.length === 9 && ssnDigits !== '000000000' && ssnDigits !== '123456789';
+    
+    case 'BANK_ACCOUNT':
+      const bankDigits = value.replace(/\D/g, '');
+      return bankDigits.length >= 8 && bankDigits.length <= 17;
+    
+    case 'EMAIL':
+      // More strict email validation
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+    
+    default:
+      return true;
+  }
 }
 
 // Mask PII based on type
@@ -407,7 +452,25 @@ async function readFileContent(file) {
     const reader = new FileReader();
 
     reader.onload = (e) => {
-      resolve(e.target.result);
+      try {
+        let content = e.target.result;
+        
+        // Handle different file types
+        if (file.type.includes('json')) {
+          // Pretty print JSON for better scanning
+          try {
+            const jsonData = JSON.parse(content);
+            content = JSON.stringify(jsonData, null, 2);
+          } catch (e) {
+            // If JSON parsing fails, use as text
+          }
+        }
+        
+        console.log('File content sample:', content.substring(0, 500));
+        resolve(content);
+      } catch (error) {
+        reject(error);
+      }
     };
 
     reader.onerror = () => {
@@ -415,16 +478,20 @@ async function readFileContent(file) {
     };
 
     // Handle different file types
-    if (file.type.includes('text') || file.name.endsWith('.txt')) {
+    if (file.type.includes('text') || 
+        file.name.endsWith('.txt') || 
+        file.name.endsWith('.csv') ||
+        file.name.endsWith('.json') ||
+        file.type.includes('json')) {
       reader.readAsText(file);
     } else if (file.type.includes('pdf')) {
-      // For basic PDF text extraction, read as text (limited but functional)
+      // For PDF, we'll read as text - this won't work perfectly but will catch some cases
       reader.readAsText(file);
     } else if (file.type.includes('word') || file.name.endsWith('.docx')) {
-      // Read as text for basic content
+      // For Word docs, read as text - limited functionality
       reader.readAsText(file);
     } else {
-      // Default to text reading
+      // Default to text reading for any other file type
       reader.readAsText(file);
     }
   });
@@ -638,10 +705,10 @@ function showSidebar(findings) {
     btn.style.opacity = '0.5';
   });
 
-  document.getElementById('ready-upload')?.addEventListener('click', () => {
-    removeSidebar();
-    proceedWithUpload();
-  });
+document.getElementById('ready-upload')?.addEventListener('click', () => {
+  removeSidebar();
+  proceedWithOriginalUpload(); // Change this from proceedWithUpload()
+});
 }
 
 // Remove overlay
@@ -664,9 +731,10 @@ function removeSidebar() {
 }
 
 // Proceed with upload
+// Proceed with upload
 function proceedWithUpload() {
   console.log('Proceeding with upload...');
-  // Original upload logic would continue here
+  proceedWithOriginalUpload();
 }
 
 // // Monitor file inputs
@@ -709,8 +777,12 @@ function monitorFileInputs() {
         if (file) {
           console.log('File selected:', file.name); // Debug log
           
-          // Don't prevent default here - let's scan in parallel
-          await scanFile(file);
+          // Prevent default upload behavior initially
+          e.preventDefault();
+          e.stopPropagation();
+          
+          // Scan the file with the original event
+          await scanFile(file, e);
         }
       });
     }
@@ -740,7 +812,16 @@ function monitorFileInputs() {
           if (files && files.length > 0) {
             console.log('File dropped:', files[0].name); // Debug log
             e.preventDefault();
-            await scanFile(files[0]);
+            e.stopPropagation();
+            
+            // Store the drop event details for later use
+            const dropEvent = {
+              target: e.target,
+              dataTransfer: e.dataTransfer,
+              type: 'drop'
+            };
+            
+            await scanFile(files[0], dropEvent);
           }
         });
       }
@@ -750,7 +831,7 @@ function monitorFileInputs() {
 
 
 // New scanFile function
-async function scanFile(file) {
+async function scanFile(file, originalEvent = null) {
   try {
     console.log('Starting scan for:', file.name); // Debug log
     
@@ -760,25 +841,204 @@ async function scanFile(file) {
     // Read and scan file
     const content = await readFileContent(file);
     console.log('File content length:', content.length); // Debug log
+    console.log('File content preview:', content.substring(0, 200)); // Debug log
     
     const findings = scanForPII(content);
     console.log('PII findings:', findings); // Debug log
 
-    // Update overlay with results
+    // Store original event for later use
+    if (originalEvent) {
+      window.piiShieldOriginalEvent = originalEvent;
+      window.piiShieldOriginalFile = file;
+    }
+
+    // Update overlay with results after delay
     setTimeout(() => {
-      createOverlay(findings);
+      updateOverlayWithResults(findings);
       detectedPII = findings;
       
       // Update stats
       updateScanStats(findings);
-    }, 1000); // Simulate scanning time
+    }, 1500); // Realistic scanning time
     
   } catch (error) {
     console.error('Error scanning file:', error);
-    createOverlay([]); // Show no findings on error
+    updateOverlayWithResults([]); // Show no findings on error
   }
 }
 
+
+// New function to update overlay with results (prevents duplicate overlays)
+function updateOverlayWithResults(findings) {
+  if (!overlay) {
+    createOverlay(findings);
+    return;
+  }
+
+  // Update existing overlay instead of creating new one
+  const severityCount = {
+    high: findings.filter((f) => f.severity === 'high').length,
+    medium: findings.filter((f) => f.severity === 'medium').length,
+    low: findings.filter((f) => f.severity === 'low').length,
+  };
+
+  const totalFindings = findings.length;
+  const overallSeverity =
+    severityCount.high > 0
+      ? 'danger'
+      : severityCount.medium > 0
+      ? 'warning'
+      : 'safe';
+
+  // Update overlay content
+  overlay.innerHTML = `
+    <div class="pii-shield-header">
+      <div class="pii-shield-icon ${overallSeverity}">
+        ${
+          overallSeverity === 'safe'
+            ? '✓'
+            : overallSeverity === 'warning'
+            ? '⚠'
+            : '⚡'
+        }
+      </div>
+      <div>
+        <h2 class="pii-shield-title">
+          ${
+            overallSeverity === 'safe'
+              ? 'Document Scan Complete'
+              : overallSeverity === 'warning'
+              ? 'Sensitive Data Detected'
+              : 'Critical Information Found'
+          }
+        </h2>
+        <p class="pii-shield-subtitle">
+          ${
+            totalFindings === 0
+              ? 'No sensitive information detected - Ready to upload'
+              : `Found ${totalFindings} potential PII item${
+                  totalFindings > 1 ? 's' : ''
+                }`
+          }
+        </p>
+      </div>
+    </div>
+    
+    ${
+      totalFindings > 0
+        ? `
+      <div class="pii-shield-stats">
+        ${
+          severityCount.high > 0
+            ? `
+          <div class="pii-shield-stat">
+            <div class="pii-shield-stat-value" style="color: #dc2626;">${severityCount.high}</div>
+            <div class="pii-shield-stat-label">High Risk</div>
+          </div>
+        `
+            : ''
+        }
+        ${
+          severityCount.medium > 0
+            ? `
+          <div class="pii-shield-stat">
+            <div class="pii-shield-stat-value" style="color: #d97706;">${severityCount.medium}</div>
+            <div class="pii-shield-stat-label">Medium Risk</div>
+          </div>
+        `
+            : ''
+        }
+        ${
+          severityCount.low > 0
+            ? `
+          <div class="pii-shield-stat">
+            <div class="pii-shield-stat-value" style="color: #2563eb;">${severityCount.low}</div>
+            <div class="pii-shield-stat-label">Low Risk</div>
+          </div>
+        `
+            : ''
+        }
+      </div>
+    `
+        : ''
+    }
+    
+    <div class="pii-shield-actions">
+      ${
+        totalFindings > 0
+          ? `
+        <button class="pii-shield-btn danger" id="skip-upload">
+          Skip & Upload
+        </button>
+        <button class="pii-shield-btn primary" id="view-details">
+          View Details
+        </button>
+      `
+          : `
+        <button class="pii-shield-btn primary" id="proceed-upload">
+          ✓ Ready to Upload
+        </button>
+      `
+      }
+    </div>
+  `;
+
+  // Re-attach event listeners
+  attachOverlayEventListeners(findings, totalFindings > 0);
+}
+
+// Separate function for event listeners
+function attachOverlayEventListeners(findings, hasPII) {
+  if (hasPII) {
+    document.getElementById('skip-upload')?.addEventListener('click', () => {
+      removeOverlay();
+      proceedWithOriginalUpload();
+    });
+
+    document.getElementById('view-details')?.addEventListener('click', () => {
+      removeOverlay();
+      showSidebar(findings);
+    });
+  } else {
+    document.getElementById('proceed-upload')?.addEventListener('click', () => {
+      removeOverlay();
+      proceedWithOriginalUpload();
+    });
+  }
+}
+
+// Fix the actual file upload process
+function proceedWithOriginalUpload() {
+  console.log('Proceeding with original upload...');
+  
+  // If we have the original event and file, trigger the upload
+  if (window.piiShieldOriginalEvent && window.piiShieldOriginalFile) {
+    const originalInput = window.piiShieldOriginalEvent.target;
+    
+    // Create a new file list with our file
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(window.piiShieldOriginalFile);
+    originalInput.files = dataTransfer.files;
+    
+    // Temporarily remove our monitoring to avoid recursion
+    originalInput.removeAttribute('data-pii-monitored');
+    
+    // Trigger change event to proceed with upload
+    const changeEvent = new Event('change', { bubbles: true });
+    originalInput.dispatchEvent(changeEvent);
+    
+    // Re-add monitoring after a delay
+    setTimeout(() => {
+      originalInput.setAttribute('data-pii-monitored', 'true');
+    }, 1000);
+    
+    // Clean up
+    delete window.piiShieldOriginalEvent;
+    delete window.piiShieldOriginalFile;
+  }
+}
+
+// New function to show scanning state
 // New function to show scanning state
 function createScanningOverlay() {
   removeOverlay();
@@ -796,23 +1056,313 @@ function createScanningOverlay() {
         <p class="pii-shield-subtitle">Analyzing content for sensitive information...</p>
       </div>
     </div>
+    
+    <div style="text-align: center; padding: 20px;">
+      <div style="width: 100%; background: #e5e7eb; border-radius: 8px; height: 6px; overflow: hidden;">
+        <div style="width: 0%; height: 100%; background: linear-gradient(135deg, #3b82f6, #2563eb); border-radius: 8px; animation: progressBar 2s ease-in-out;"></div>
+      </div>
+      <p style="margin-top: 12px; font-size: 13px; color: #6b7280;">Please wait while we analyze your document...</p>
+    </div>
   `;
   
   document.body.appendChild(overlay);
 }
 
 // Add spin animation to styles
+// Inject styles
 function injectStyles() {
   const style = document.createElement('style');
   style.textContent = `
-    /* ... existing styles ... */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
+    .pii-shield-overlay {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 999999;
+      width: 400px;
+      background: rgba(255, 255, 255, 0.98);
+      backdrop-filter: blur(20px);
+      border-radius: 24px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+      padding: 32px;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translate(-50%, -45%);
+      }
+      to {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+      }
+    }
+
     @keyframes spin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
     }
-    
-    /* ... rest of existing styles ... */
+
+    @keyframes progressBar {
+      from { width: 0%; }
+      to { width: 100%; }
+    }
+
+    .pii-shield-overlay.glass {
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.7));
+      border: 1px solid rgba(255, 255, 255, 0.5);
+    }
+
+    .pii-shield-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .pii-shield-icon {
+      width: 56px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 16px;
+      font-size: 28px;
+    }
+
+    .pii-shield-icon.safe {
+      background: linear-gradient(135deg, #10b981, #059669);
+      box-shadow: 0 8px 20px rgba(16, 185, 129, 0.3);
+    }
+
+    .pii-shield-icon.warning {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      box-shadow: 0 8px 20px rgba(245, 158, 11, 0.3);
+    }
+
+    .pii-shield-icon.danger {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      box-shadow: 0 8px 20px rgba(239, 68, 68, 0.3);
+    }
+
+    .pii-shield-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #1f2937;
+      margin: 0;
+    }
+
+    .pii-shield-subtitle {
+      font-size: 14px;
+      color: #6b7280;
+      margin: 4px 0 0 0;
+    }
+
+    .pii-shield-content {
+      margin-bottom: 24px;
+    }
+
+    .pii-shield-stats {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .pii-shield-stat {
+      flex: 1;
+      padding: 12px;
+      background: rgba(249, 250, 251, 0.8);
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .pii-shield-stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .pii-shield-stat-label {
+      font-size: 12px;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .pii-shield-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .pii-shield-btn {
+      flex: 1;
+      padding: 12px 20px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+
+    .pii-shield-btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .pii-shield-btn.primary {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    }
+
+    .pii-shield-btn.secondary {
+      background: rgba(243, 244, 246, 0.8);
+      color: #4b5563;
+      border: 1px solid rgba(229, 231, 235, 0.8);
+    }
+
+    .pii-shield-btn.danger {
+      background: rgba(254, 226, 226, 0.5);
+      color: #dc2626;
+      border: 1px solid rgba(254, 202, 202, 0.5);
+    }
+
+    .pii-shield-sidebar {
+      position: fixed;
+      right: 0;
+      top: 0;
+      width: 420px;
+      height: 100vh;
+      background: rgba(255, 255, 255, 0.98);
+      backdrop-filter: blur(20px);
+      box-shadow: -10px 0 40px rgba(0, 0, 0, 0.1);
+      z-index: 999998;
+      transform: translateX(100%);
+      transition: transform 0.3s ease-out;
+      overflow-y: auto;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    .pii-shield-sidebar.open {
+      transform: translateX(0);
+    }
+
+    .pii-shield-sidebar-header {
+      padding: 24px;
+      background: linear-gradient(135deg, #f9fafb, #f3f4f6);
+      border-bottom: 1px solid rgba(229, 231, 235, 0.5);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .pii-shield-sidebar-close {
+      position: absolute;
+      right: 24px;
+      top: 24px;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: white;
+      border: 1px solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .pii-shield-sidebar-close:hover {
+      background: #f3f4f6;
+      transform: rotate(90deg);
+    }
+
+    .pii-shield-sidebar-content {
+      padding: 24px;
+    }
+
+    .pii-detection-item {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      transition: all 0.2s;
+    }
+
+    .pii-detection-item:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      transform: translateY(-1px);
+    }
+
+    .pii-detection-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .pii-detection-type {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 500;
+      color: #1f2937;
+    }
+
+    .pii-detection-severity {
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .severity-high {
+      background: #fee2e2;
+      color: #dc2626;
+    }
+
+    .severity-medium {
+      background: #fef3c7;
+      color: #d97706;
+    }
+
+    .severity-low {
+      background: #dbeafe;
+      color: #2563eb;
+    }
+
+    .pii-detection-value {
+      font-family: 'Courier New', monospace;
+      background: #f9fafb;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #4b5563;
+      word-break: break-all;
+    }
+
+    .pii-detection-masked {
+      color: #10b981;
+      font-weight: 600;
+    }
+
+    .scanning-animation {
+      display: inline-block;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
   `;
   document.head.appendChild(style);
 }
@@ -829,45 +1379,86 @@ function updateScanStats(findings) {
 
 
   // Monitor drag and drop
-  if (!document.body.hasAttribute('data-pii-drop-monitored')) {
-    document.body.setAttribute('data-pii-drop-monitored', 'true');
+  // if (!document.body.hasAttribute('data-pii-drop-monitored')) {
+  //   document.body.setAttribute('data-pii-drop-monitored', 'true');
 
-    document.body.addEventListener('drop', async (e) => {
-      const files = e.dataTransfer?.files;
-      if (files && files.length > 0) {
-        const file = files[0];
+  //   document.body.addEventListener('drop', async (e) => {
+  //     const files = e.dataTransfer?.files;
+  //     if (files && files.length > 0) {
+  //       const file = files[0];
 
-        // Check if this is a file upload area
-        const target = e.target;
-        const isUploadArea =
-          target.matches(
-            'input[type="file"], .upload-area, .dropzone, [data-upload]'
-          ) || target.closest('.upload-area, .dropzone, [data-upload]');
+  //       // Check if this is a file upload area
+  //       const target = e.target;
+  //       const isUploadArea =
+  //         target.matches(
+  //           'input[type="file"], .upload-area, .dropzone, [data-upload]'
+  //         ) || target.closest('.upload-area, .dropzone, [data-upload]');
 
-        if (isUploadArea) {
-          e.preventDefault();
-          e.stopPropagation();
+  //       if (isUploadArea) {
+  //         e.preventDefault();
+  //         e.stopPropagation();
 
-          // Show scanning overlay
-          createOverlay([]);
+  //         // Show scanning overlay
+  //         createOverlay([]);
 
-          // Read and scan file
-          const content = await readFileContent(file);
-          const findings = scanForPII(content);
+  //         // Read and scan file
+  //         const content = await readFileContent(file);
+  //         const findings = scanForPII(content);
 
-          // Update overlay with results
-          setTimeout(() => {
-            createOverlay(findings);
-            detectedPII = findings;
-          }, 1000);
-        }
-      }
-    });
+  //         // Update overlay with results
+  //         setTimeout(() => {
+  //           createOverlay(findings);
+  //           detectedPII = findings;
+  //         }, 1000);
+  //       }
+  //     }
+  //   });
+
+  // }
+
+
+  // Add this function to content.js for debugging:
+function testPIIPatterns() {
+  const testText = `
+    Test Document Content:
+    Name: John Doe
+    SSN: 123-45-6789
+    Email: john.doe@example.com
+    Phone: (555) 123-4567
+    Credit Card: 4532 1234 5678 9012
+    Bank Account: 141592653
+    Another email: test@company.org
+    IP: 192.168.1.1
+    Date: 01/15/1990
+  `;
+  
+  console.log('Testing PII patterns with sample text:');
+  console.log(testText);
+  
+  const findings = scanForPII(testText);
+  console.log('Test PII scan results:', findings);
+  
+  if (findings.length > 0) {
+    createOverlay(findings);
+  } else {
+    console.log('No PII detected in test');
   }
+  
+  return findings;
 }
 
+// Expose test function globally for debugging
+window.testPIIShield = testPIIPatterns;
+
+// Initialize
 // Initialize
 function initialize() {
+  // Wait for document.body to be available
+  if (!document.body) {
+    setTimeout(initialize, 100);
+    return;
+  }
+
   injectStyles();
   monitorFileInputs();
 
