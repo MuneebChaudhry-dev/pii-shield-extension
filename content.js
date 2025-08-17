@@ -68,8 +68,6 @@ let isScanning = false;
 let sidebar = null;
 let overlay = null;
 let detectedPII = [];
-let extensionSleeping = false;
-let bypassOverlay = null;
 let db = null; // Add IndexedDB reference
 
 // Initialize IndexedDB
@@ -382,6 +380,25 @@ function injectStyles() {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.5; }
     }
+
+    
+.pii-shield-actions {
+  display: flex;
+  gap: 8px; /* Reduced gap for three buttons */
+}
+
+.pii-shield-btn {
+  flex: 1;
+  padding: 10px 16px; /* Slightly smaller padding */
+  border-radius: 12px;
+  font-size: 13px; /* Slightly smaller font */
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  text-align: center;
+}
   `;
   document.head.appendChild(style);
 }
@@ -537,6 +554,7 @@ async function readFileContent(file) {
 }
 
 // Create overlay UI
+// Create overlay UI with three buttons for PII findings
 function createOverlay(findings) {
   removeOverlay();
 
@@ -633,8 +651,11 @@ function createOverlay(findings) {
       ${
         totalFindings > 0
           ? `
-        <button class="pii-shield-btn danger" id="skip-upload">
-          Skip & Upload
+        <button class="pii-shield-btn secondary" id="skip-document">
+          Skip This Document
+        </button>
+        <button class="pii-shield-btn danger" id="skip-tab">
+          Skip This Tab
         </button>
         <button class="pii-shield-btn primary" id="view-details">
           View Details
@@ -653,9 +674,12 @@ function createOverlay(findings) {
 
   // Add event listeners
   if (totalFindings > 0) {
-    document.getElementById('skip-upload')?.addEventListener('click', () => {
-      removeOverlay();
-      proceedWithUpload();
+    document.getElementById('skip-document')?.addEventListener('click', () => {
+      skipCurrentDocument();
+    });
+
+    document.getElementById('skip-tab')?.addEventListener('click', () => {
+      skipCurrentTab();
     });
 
     document.getElementById('view-details')?.addEventListener('click', () => {
@@ -665,10 +689,81 @@ function createOverlay(findings) {
   } else {
     document.getElementById('proceed-upload')?.addEventListener('click', () => {
       removeOverlay();
-      proceedWithUpload();
     });
   }
 }
+
+// Skip current document - add to IndexedDB and show success message
+async function skipCurrentDocument() {
+  if (!window.piiShieldOriginalFile) {
+    console.error('No file to skip');
+    return;
+  }
+
+  const file = window.piiShieldOriginalFile;
+  await addFileExemption(file);
+  
+  removeOverlay();
+  showSuccessMessage(
+    'Document Skipped', 
+    'This document has been skipped for the current tab. Please upload it again.'
+  );
+  
+  // Clean up
+  delete window.piiShieldOriginalEvent;
+  delete window.piiShieldOriginalFile;
+}
+
+// Skip current tab - add tab to IndexedDB and show success message
+async function skipCurrentTab() {
+  await addTabExemption();
+  
+  removeOverlay();
+  showSuccessMessage(
+    'Tab Scanning Disabled', 
+    'Document scanning has been disabled for this tab. Please upload your file again.'
+  );
+  
+  // Clean up
+  delete window.piiShieldOriginalEvent;
+  delete window.piiShieldOriginalFile;
+}
+
+// Show success message (SweetAlert-like)
+function showSuccessMessage(title, message) {
+  const successOverlay = document.createElement('div');
+  successOverlay.className = 'pii-shield-overlay glass';
+  
+  successOverlay.innerHTML = `
+    <div class="pii-shield-header">
+      <div class="pii-shield-icon safe">
+        ✓
+      </div>
+      <div>
+        <h2 class="pii-shield-title">${title}</h2>
+        <p class="pii-shield-subtitle">${message}</p>
+      </div>
+    </div>
+    
+    <div class="pii-shield-actions">
+      <button class="pii-shield-btn primary" id="close-success" style="width: 100%;">
+        OK
+      </button>
+    </div>
+  `;
+  
+  document.body.appendChild(successOverlay);
+  
+  // Auto close after 3 seconds or on click
+  const closeBtn = document.getElementById('close-success');
+  const closeFunction = () => {
+    successOverlay.remove();
+  };
+  
+  closeBtn.addEventListener('click', closeFunction);
+  setTimeout(closeFunction, 3000);
+}
+
 
 // Show sidebar with details
 function showSidebar(findings) {
@@ -806,77 +901,38 @@ function proceedWithUpload() {
 //     }
 //   });
 function monitorFileInputs() {
-  if (extensionSleeping) {
-    console.log('Extension is sleeping - skipping file monitoring setup');
-    return;
-  }
-
-  // Monitor existing file inputs
-  // Monitor existing file inputs
   document.querySelectorAll('input[type="file"]').forEach((input) => {
     if (!input.hasAttribute('data-pii-monitored')) {
       input.setAttribute('data-pii-monitored', 'true');
 
       input.addEventListener('change', async (e) => {
-        // Double-check sleep state when event fires
-        if (extensionSleeping) {
-          console.log('Extension is sleeping - allowing normal upload');
-          return; // Let the upload proceed normally
-        }
-
         const file = e.target.files[0];
         if (file) {
           console.log('File selected:', file.name);
 
-          // Prevent default upload behavior initially
+          // Check if tab is exempted
+          const tabExempted = await isTabExempted();
+          if (tabExempted) {
+            console.log('Tab is exempted - allowing upload');
+            return; // Let upload proceed normally
+          }
+
+          // Check if this specific file is exempted
+          const fileExempted = await isFileExempted(file);
+          if (fileExempted) {
+            console.log('File is exempted - allowing upload');
+            return; // Let upload proceed normally
+          }
+
+          // Prevent default upload behavior
           e.preventDefault();
           e.stopPropagation();
 
-          // Scan the file with the original event
+          // Scan the file
           await scanFile(file, e);
         }
       });
     }
-  });
-
-  // Monitor for file drag and drop on common upload areas
-  const uploadSelectors = [
-    'input[type="file"]',
-    '.upload-area',
-    '.dropzone',
-    '[data-upload]',
-    '.file-upload',
-    '.drag-drop',
-  ];
-
-  uploadSelectors.forEach((selector) => {
-    document.querySelectorAll(selector).forEach((element) => {
-      if (!element.hasAttribute('data-pii-drop-monitored')) {
-        element.setAttribute('data-pii-drop-monitored', 'true');
-
-        element.addEventListener('dragover', (e) => {
-          e.preventDefault();
-        });
-
-        element.addEventListener('drop', async (e) => {
-          const files = e.dataTransfer?.files;
-          if (files && files.length > 0) {
-            console.log('File dropped:', files[0].name); // Debug log
-            e.preventDefault();
-            e.stopPropagation();
-
-            // Store the drop event details for later use
-            const dropEvent = {
-              target: e.target,
-              dataTransfer: e.dataTransfer,
-              type: 'drop',
-            };
-
-            await scanFile(files[0], dropEvent);
-          }
-        });
-      }
-    });
   });
 }
 
@@ -1036,118 +1092,26 @@ function updateOverlayWithResults(findings) {
 }
 
 // Separate function for event listeners
-function attachOverlayEventListeners(findings, hasPII) {
-  if (hasPII) {
-    document.getElementById('skip-upload')?.addEventListener('click', () => {
-      removeOverlay();
-      proceedWithOriginalUpload();
-    });
+// function attachOverlayEventListeners(findings, hasPII) {
+//   if (hasPII) {
+//     // document.getElementById('skip-upload')?.addEventListener('click', () => {
+//     //   removeOverlay();
+//     //   proceedWithOriginalUpload();
+//     // });
 
-    document.getElementById('view-details')?.addEventListener('click', () => {
-      removeOverlay();
-      showSidebar(findings);
-    });
-  } else {
-    document.getElementById('proceed-upload')?.addEventListener('click', () => {
-      removeOverlay();
-      proceedWithOriginalUpload();
-    });
-  }
-}
+//     document.getElementById('view-details')?.addEventListener('click', () => {
+//       removeOverlay();
+//       showSidebar(findings);
+//     });
+//   } else {
+//     document.getElementById('proceed-upload')?.addEventListener('click', () => {
+//       removeOverlay();
+//       proceedWithOriginalUpload();
+//     });
+//   }
+// }
 
-// Fix the actual file upload process
-// Implement temporary bypass approach
-function proceedWithOriginalUpload() {
-  console.log('User wants to upload - implementing temporary bypass');
-  
-  // 1. Put extension to sleep
-  extensionSleeping = true;
-  
-  // 2. Remove all monitoring temporarily
-  document.querySelectorAll('[data-pii-monitored]').forEach(input => {
-    input.removeAttribute('data-pii-monitored');
-  });
-  
-  // 3. Show bypass instructions to user
-  showBypassMessage();
-  
-  // 4. Wake up after 5 seconds
-  setTimeout(() => {
-    extensionSleeping = false;
-    removeBypassMessage();
-    monitorFileInputs(); // Re-enable monitoring
-    console.log('Extension monitoring resumed');
-  }, 15000);
-  
-  // 5. Clean up stored event data
-  if (window.piiShieldOriginalEvent) {
-    delete window.piiShieldOriginalEvent;
-  }
-  if (window.piiShieldOriginalFile) {
-    delete window.piiShieldOriginalFile;
-  }
-}
 
-// Show bypass instruction message
-function showBypassMessage() {
-  removeBypassMessage(); // Remove any existing message
-  
-  bypassOverlay = document.createElement('div');
-  bypassOverlay.className = 'pii-shield-overlay glass';
-  
-  bypassOverlay.innerHTML = `
-    <div class="pii-shield-header">
-      <div class="pii-shield-icon safe">
-        <div style="animation: pulse 2s ease-in-out infinite;">⏸</div>
-      </div>
-      <div>
-        <h2 class="pii-shield-title">Upload Monitoring Paused</h2>
-        <p class="pii-shield-subtitle">Please upload your file again normally</p>
-      </div>
-    </div>
-    
-    <div style="text-align: center; padding: 20px;">
-      <div style="background: rgba(16, 185, 129, 0.1); padding: 16px; border-radius: 12px; margin-bottom: 16px;">
-        <p style="color: #059669; font-weight: 500; margin-bottom: 8px;">📎 Instructions:</p>
-        <p style="color: #047857; font-size: 14px; line-height: 1.5;">
-          Click the attachment/upload button again and select your file. 
-          The extension will not interfere with this upload.
-        </p>
-      </div>
-      
-      <div style="background: #e5e7eb; border-radius: 8px; height: 4px; overflow: hidden;">
-        <div style="width: 100%; height: 100%; background: linear-gradient(135deg, #10b981, #059669); border-radius: 8px; animation: bypassCountdown 5s linear;"></div>
-      </div>
-      <p style="margin-top: 12px; font-size: 13px; color: #6b7280;">
-        Monitoring will resume automatically in 5 seconds
-      </p>
-    </div>
-    
-    <div class="pii-shield-actions">
-      <button class="pii-shield-btn secondary" id="cancel-bypass" style="width: 100%;">
-        Cancel & Resume Monitoring
-      </button>
-    </div>
-  `;
-  
-  document.body.appendChild(bypassOverlay);
-  
-  // Add cancel button functionality
-  document.getElementById('cancel-bypass')?.addEventListener('click', () => {
-    extensionSleeping = false;
-    removeBypassMessage();
-    monitorFileInputs(); // Re-enable monitoring immediately
-    console.log('Bypass cancelled - monitoring resumed');
-  });
-}
-
-// Remove bypass message
-function removeBypassMessage() {
-  if (bypassOverlay) {
-    bypassOverlay.remove();
-    bypassOverlay = null;
-  }
-}
 // New function to show scanning state
 function createScanningOverlay() {
   removeOverlay();
