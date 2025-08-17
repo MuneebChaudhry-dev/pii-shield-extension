@@ -1092,25 +1092,27 @@ function updateOverlayWithResults(findings) {
 }
 
 // Separate function for event listeners
-// function attachOverlayEventListeners(findings, hasPII) {
-//   if (hasPII) {
-//     // document.getElementById('skip-upload')?.addEventListener('click', () => {
-//     //   removeOverlay();
-//     //   proceedWithOriginalUpload();
-//     // });
+// Add this function to content.js (place it after the updateOverlayWithResults function)
+function attachOverlayEventListeners(findings, hasPII) {
+  if (hasPII) {
+    document.getElementById('skip-document')?.addEventListener('click', () => {
+      skipCurrentDocument();
+    });
 
-//     document.getElementById('view-details')?.addEventListener('click', () => {
-//       removeOverlay();
-//       showSidebar(findings);
-//     });
-//   } else {
-//     document.getElementById('proceed-upload')?.addEventListener('click', () => {
-//       removeOverlay();
-//       proceedWithOriginalUpload();
-//     });
-//   }
-// }
+    document.getElementById('skip-tab')?.addEventListener('click', () => {
+      skipCurrentTab();
+    });
 
+    document.getElementById('view-details')?.addEventListener('click', () => {
+      removeOverlay();
+      showSidebar(findings);
+    });
+  } else {
+    document.getElementById('proceed-upload')?.addEventListener('click', () => {
+      removeOverlay();
+    });
+  }
+}
 
 // New function to show scanning state
 function createScanningOverlay() {
