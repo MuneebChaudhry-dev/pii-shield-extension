@@ -693,60 +693,64 @@ function createOverlay(findings) {
   }
 }
 
-// Skip current document - add to IndexedDB and show success message
-// Skip current document - add to IndexedDB and show success message
 async function skipCurrentDocument() {
   console.log('skipCurrentDocument called');
-  
-  if (!window.piiShieldOriginalFile) {
+
+  const file = window.piiShieldContext?.file;
+  if (!file) {
     console.error('No file to skip');
     return;
   }
 
-  const file = window.piiShieldOriginalFile;
-  
   try {
     await addFileExemption(file);
     console.log('File exemption added successfully');
-    
+
     removeOverlay();
-    
-    // Proceed with upload immediately
+
+    // Proceed with upload
     proceedWithOriginalUpload();
-    
+
+    // Also handle form submission if needed
+    if (window.piiShieldFormContext) {
+      proceedWithFormSubmission();
+    }
+
     showSuccessMessage(
-      'Document Uploaded', 
+      'Document Uploaded',
       'Document has been uploaded successfully without scanning.'
     );
-    
   } catch (error) {
     console.error('Error adding file exemption:', error);
   }
 }
 
-// Skip current tab - add tab to IndexedDB and show success message
-// Skip current tab - add tab to IndexedDB and show success message
 async function skipCurrentTab() {
   console.log('skipCurrentTab called');
-  
+
   try {
     await addTabExemption();
     console.log('Tab exemption added successfully');
-    
+
     removeOverlay();
-    
-    // Proceed with upload immediately
+
+    // Proceed with upload
     proceedWithOriginalUpload();
-    
+
+    // Also handle form submission if needed
+    if (window.piiShieldFormContext) {
+      proceedWithFormSubmission();
+    }
+
     showSuccessMessage(
-      'Tab Scanning Disabled', 
+      'Tab Scanning Disabled',
       'Document scanning disabled for this tab. Document uploaded successfully.'
     );
-    
   } catch (error) {
     console.error('Error adding tab exemption:', error);
   }
 }
+
 function debugFileInput(input) {
   console.log('Input element:', input);
   console.log('Input value:', input.value);
@@ -863,11 +867,15 @@ function showSidebar(findings) {
     btn.disabled = true;
     btn.style.opacity = '0.5';
   });
+document.getElementById('ready-upload')?.addEventListener('click', () => {
+  removeSidebar();
+  proceedWithOriginalUpload();
 
-  document.getElementById('ready-upload')?.addEventListener('click', () => {
-    removeSidebar();
-    proceedWithOriginalUpload(); // Change this from proceedWithUpload()
-  });
+  // Also handle form submission if needed
+  if (window.piiShieldFormContext) {
+    proceedWithFormSubmission();
+  }
+});
 }
 
 // Remove overlay
@@ -895,117 +903,183 @@ function proceedWithUpload() {
   console.log('Proceeding with upload...');
   proceedWithOriginalUpload();
 }
-
-// // Monitor file inputs
-// function monitorFileInputs() {
-//   // Monitor existing file inputs
-//   document.querySelectorAll('input[type="file"]').forEach((input) => {
-//     if (!input.hasAttribute('data-pii-monitored')) {
-//       input.setAttribute('data-pii-monitored', 'true');
-
-//       input.addEventListener('change', async (e) => {
-//         const file = e.target.files[0];
-//         if (file) {
-//           e.preventDefault();
-//           e.stopPropagation();
-
-//           // Show scanning overlay
-//           createOverlay([]);
-
-//           // Read and scan file
-//           const content = await readFileContent(file);
-//           const findings = scanForPII(content);
-
-//           // Update overlay with results
-//           setTimeout(() => {
-//             createOverlay(findings);
-//             detectedPII = findings;
-//           }, 1000); // Simulate scanning time
-//         }
-//       });
-//     }
-//   });
 function monitorFileInputs() {
   document.querySelectorAll('input[type="file"]').forEach((input) => {
     if (!input.hasAttribute('data-pii-monitored')) {
       input.setAttribute('data-pii-monitored', 'true');
 
-      // Store original onchange handler if it exists
+      // Store original handlers
       const originalOnChange = input.onchange;
+      const originalHandlers = [];
 
+      // Capture all existing event listeners (if possible)
+      const events = ['change', 'input'];
+      events.forEach((eventType) => {
+        const originalHandler = input[`on${eventType}`];
+        if (originalHandler) {
+          originalHandlers.push({ type: eventType, handler: originalHandler });
+        }
+      });
+
+      // Remove original onchange to prevent immediate upload
+      input.onchange = null;
+
+      // Add our interceptor with highest priority
       input.addEventListener(
         'change',
         async (e) => {
           const file = e.target.files[0];
           if (file) {
-            console.log('File selected:', file.name);
+            console.log('File intercepted:', file.name);
 
-            // Check if tab is exempted
+            // Check exemptions first
             const tabExempted = await isTabExempted();
-            if (tabExempted) {
-              console.log('Tab is exempted - allowing upload');
-              return; // Let upload proceed normally
-            }
-
-            // Check if this specific file is exempted
             const fileExempted = await isFileExempted(file);
-            if (fileExempted) {
-              console.log('File is exempted - allowing upload');
-              return; // Let upload proceed normally
+
+            if (tabExempted || fileExempted) {
+              console.log('Upload allowed - exemption exists');
+              // Restore original handlers and proceed
+              restoreOriginalHandlers(
+                input,
+                originalOnChange,
+                originalHandlers
+              );
+              return;
             }
 
-            // PREVENT ALL DEFAULT BEHAVIORS
+            // BLOCK THE UPLOAD
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
 
-            // Clear the file input to prevent upload
+            // Clear the input to prevent any form submission
+            const originalValue = input.value;
             input.value = '';
 
-            // Store the original file and input for later use
-            window.piiShieldOriginalFile = file;
-            window.piiShieldOriginalInput = input;
-            window.piiShieldOriginalOnChange = originalOnChange;
+            // Store for later restoration
+            window.piiShieldContext = {
+              input: input,
+              file: file,
+              originalValue: originalValue,
+              originalOnChange: originalOnChange,
+              originalHandlers: originalHandlers,
+            };
 
-            // Scan the file
+            // Start scanning process
             await scanFile(file, e);
           }
         },
         true
-      ); // Use capture phase to catch event first
+      ); // Use capture phase
     }
   });
 }
 
+function restoreOriginalHandlers(input, originalOnChange, originalHandlers) {
+  // Restore original onchange
+  if (originalOnChange) {
+    input.onchange = originalOnChange;
+  }
+
+  // Restore other handlers
+  originalHandlers.forEach(({ type, handler }) => {
+    input[`on${type}`] = handler;
+  });
+}
+
+
 function proceedWithOriginalUpload() {
   console.log('Proceeding with original upload...');
 
-  if (window.piiShieldOriginalFile && window.piiShieldOriginalInput) {
-    const input = window.piiShieldOriginalInput;
-    const file = window.piiShieldOriginalFile;
+  if (window.piiShieldContext) {
+    const { input, file, originalOnChange, originalHandlers } =
+      window.piiShieldContext;
 
-    // Create a new FileList with our file
+    // Create a new file input with the same attributes
+    const newInput = input.cloneNode(true);
+
+    // Create FileList with our file
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(file);
 
-    // Set the file back to the input
+    // Set the files
+    newInput.files = dataTransfer.files;
     input.files = dataTransfer.files;
+    input.value = newInput.value;
 
-    // Trigger the original change event if it existed
-    if (window.piiShieldOriginalOnChange) {
-      window.piiShieldOriginalOnChange.call(input, { target: input });
+    // Restore original handlers
+    restoreOriginalHandlers(input, originalOnChange, originalHandlers);
+
+    // Trigger the original change event
+    if (originalOnChange) {
+      originalOnChange.call(input, { target: input, type: 'change' });
     }
 
-    // Trigger change event for the input
-    const changeEvent = new Event('change', { bubbles: true });
+    // Dispatch events
+    const changeEvent = new Event('change', {
+      bubbles: true,
+      cancelable: true,
+    });
+    const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+
     input.dispatchEvent(changeEvent);
+    input.dispatchEvent(inputEvent);
 
     // Clean up
-    delete window.piiShieldOriginalFile;
-    delete window.piiShieldOriginalInput;
-    delete window.piiShieldOriginalOnChange;
+    delete window.piiShieldContext;
   }
 }
+
+
+// Add this function to monitor form submissions
+function monitorFormSubmissions() {
+  document.addEventListener('submit', async (e) => {
+    const form = e.target;
+    const fileInputs = form.querySelectorAll('input[type="file"]');
+    
+    for (const input of fileInputs) {
+      if (input.files && input.files.length > 0) {
+        const file = input.files[0];
+        
+        // Check if we need to scan this file
+        const tabExempted = await isTabExempted();
+        const fileExempted = await isFileExempted(file);
+        
+        if (!tabExempted && !fileExempted) {
+          // Block form submission and scan file
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          
+          console.log('Form submission blocked for scanning');
+          
+          // Store form context for later submission
+          window.piiShieldFormContext = {
+            form: form,
+            originalSubmit: form.submit.bind(form)
+          };
+          
+          await scanFile(file, e);
+          return false;
+        }
+      }
+    }
+  }, true);
+}
+
+// Add form submission restoration
+function proceedWithFormSubmission() {
+  if (window.piiShieldFormContext) {
+    const { form, originalSubmit } = window.piiShieldFormContext;
+    
+    // Proceed with form submission
+    originalSubmit();
+    
+    // Clean up
+    delete window.piiShieldFormContext;
+  }
+}
+
 // New scanFile function
 async function scanFile(file, originalEvent = null) {
   try {
@@ -1749,13 +1823,11 @@ async function cleanupExemptions() {
 // Initialize
 // Replace your initialize function with this:
 async function initialize() {
-  // Wait for document.body to be available
   if (!document.body) {
     setTimeout(initialize, 100);
     return;
   }
 
-  // Initialize IndexedDB first
   try {
     await initDB();
     console.log('IndexedDB initialized successfully');
@@ -1765,8 +1837,8 @@ async function initialize() {
 
   injectStyles();
   monitorFileInputs();
+  monitorFormSubmissions(); // Add this line
 
-  // Monitor for dynamically added file inputs
   const observer = new MutationObserver(() => {
     monitorFileInputs();
   });
@@ -1776,8 +1848,7 @@ async function initialize() {
     subtree: true,
   });
 
-  // Clean up old exemptions periodically
-  setInterval(cleanupExemptions, 5 * 60 * 1000); // Every 5 minutes
+  setInterval(cleanupExemptions, 5 * 60 * 1000);
 }
 // Start when DOM is ready
 if (document.readyState === 'loading') {
