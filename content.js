@@ -1067,24 +1067,27 @@ function updateOverlayWithResults(findings) {
         : ''
     }
     
-    <div class="pii-shield-actions">
-      ${
-        totalFindings > 0
-          ? `
-        <button class="pii-shield-btn danger" id="skip-upload">
-         Allow Upload
-        </button>
-        <button class="pii-shield-btn primary" id="view-details">
-          View Details
-        </button>
-      `
-          : `
-        <button class="pii-shield-btn primary" id="proceed-upload">
-          ✓ Ready to Upload
-        </button>
-      `
-      }
-    </div>
+<div class="pii-shield-actions">
+  ${
+    totalFindings > 0
+      ? `
+    <button class="pii-shield-btn secondary" id="skip-document">
+      Skip This Document
+    </button>
+    <button class="pii-shield-btn danger" id="skip-tab">
+      Skip This Tab
+    </button>
+    <button class="pii-shield-btn primary" id="view-details">
+      View Details
+    </button>
+  `
+      : `
+    <button class="pii-shield-btn primary" id="proceed-upload">
+      ✓ Ready to Upload
+    </button>
+  `
+  }
+</div>
   `;
 
   // Re-attach event listeners
@@ -1093,13 +1096,16 @@ function updateOverlayWithResults(findings) {
 
 // Separate function for event listeners
 // Add this function to content.js (place it after the updateOverlayWithResults function)
+// Make sure your attachOverlayEventListeners function looks like this:
 function attachOverlayEventListeners(findings, hasPII) {
   if (hasPII) {
     document.getElementById('skip-document')?.addEventListener('click', () => {
+      console.log('Skip document button clicked!'); // Debug log
       skipCurrentDocument();
     });
 
     document.getElementById('skip-tab')?.addEventListener('click', () => {
+      console.log('Skip tab button clicked!'); // Debug log
       skipCurrentTab();
     });
 
@@ -1671,11 +1677,20 @@ async function cleanupExemptions() {
 
 
 // Initialize
-function initialize() {
+// Replace your initialize function with this:
+async function initialize() {
   // Wait for document.body to be available
   if (!document.body) {
     setTimeout(initialize, 100);
     return;
+  }
+
+  // Initialize IndexedDB first
+  try {
+    await initDB();
+    console.log('IndexedDB initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize IndexedDB:', error);
   }
 
   injectStyles();
@@ -1690,8 +1705,10 @@ function initialize() {
     childList: true,
     subtree: true,
   });
-}
 
+  // Clean up old exemptions periodically
+  setInterval(cleanupExemptions, 5 * 60 * 1000); // Every 5 minutes
+}
 // Start when DOM is ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initialize);
