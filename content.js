@@ -694,41 +694,66 @@ function createOverlay(findings) {
 }
 
 // Skip current document - add to IndexedDB and show success message
+// Skip current document - add to IndexedDB and show success message
 async function skipCurrentDocument() {
+  console.log('skipCurrentDocument called');
+  
   if (!window.piiShieldOriginalFile) {
     console.error('No file to skip');
     return;
   }
 
   const file = window.piiShieldOriginalFile;
-  await addFileExemption(file);
   
-  removeOverlay();
-  showSuccessMessage(
-    'Document Skipped', 
-    'This document has been skipped for the current tab. Please upload it again.'
-  );
-  
-  // Clean up
-  delete window.piiShieldOriginalEvent;
-  delete window.piiShieldOriginalFile;
+  try {
+    await addFileExemption(file);
+    console.log('File exemption added successfully');
+    
+    removeOverlay();
+    
+    // Proceed with upload immediately
+    proceedWithOriginalUpload();
+    
+    showSuccessMessage(
+      'Document Uploaded', 
+      'Document has been uploaded successfully without scanning.'
+    );
+    
+  } catch (error) {
+    console.error('Error adding file exemption:', error);
+  }
 }
 
 // Skip current tab - add tab to IndexedDB and show success message
+// Skip current tab - add tab to IndexedDB and show success message
 async function skipCurrentTab() {
-  await addTabExemption();
+  console.log('skipCurrentTab called');
   
-  removeOverlay();
-  showSuccessMessage(
-    'Tab Scanning Disabled', 
-    'Document scanning has been disabled for this tab. Please upload your file again.'
-  );
-  
-  // Clean up
-  delete window.piiShieldOriginalEvent;
-  delete window.piiShieldOriginalFile;
+  try {
+    await addTabExemption();
+    console.log('Tab exemption added successfully');
+    
+    removeOverlay();
+    
+    // Proceed with upload immediately
+    proceedWithOriginalUpload();
+    
+    showSuccessMessage(
+      'Tab Scanning Disabled', 
+      'Document scanning disabled for this tab. Document uploaded successfully.'
+    );
+    
+  } catch (error) {
+    console.error('Error adding tab exemption:', error);
+  }
 }
-
+function debugFileInput(input) {
+  console.log('Input element:', input);
+  console.log('Input value:', input.value);
+  console.log('Input files:', input.files);
+  console.log('Input onchange:', input.onchange);
+  console.log('Input event listeners:', getEventListeners(input));
+}
 // Show success message (SweetAlert-like)
 function showSuccessMessage(title, message) {
   const successOverlay = document.createElement('div');
@@ -905,37 +930,82 @@ function monitorFileInputs() {
     if (!input.hasAttribute('data-pii-monitored')) {
       input.setAttribute('data-pii-monitored', 'true');
 
-      input.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          console.log('File selected:', file.name);
+      // Store original onchange handler if it exists
+      const originalOnChange = input.onchange;
 
-          // Check if tab is exempted
-          const tabExempted = await isTabExempted();
-          if (tabExempted) {
-            console.log('Tab is exempted - allowing upload');
-            return; // Let upload proceed normally
+      input.addEventListener(
+        'change',
+        async (e) => {
+          const file = e.target.files[0];
+          if (file) {
+            console.log('File selected:', file.name);
+
+            // Check if tab is exempted
+            const tabExempted = await isTabExempted();
+            if (tabExempted) {
+              console.log('Tab is exempted - allowing upload');
+              return; // Let upload proceed normally
+            }
+
+            // Check if this specific file is exempted
+            const fileExempted = await isFileExempted(file);
+            if (fileExempted) {
+              console.log('File is exempted - allowing upload');
+              return; // Let upload proceed normally
+            }
+
+            // PREVENT ALL DEFAULT BEHAVIORS
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
+            // Clear the file input to prevent upload
+            input.value = '';
+
+            // Store the original file and input for later use
+            window.piiShieldOriginalFile = file;
+            window.piiShieldOriginalInput = input;
+            window.piiShieldOriginalOnChange = originalOnChange;
+
+            // Scan the file
+            await scanFile(file, e);
           }
-
-          // Check if this specific file is exempted
-          const fileExempted = await isFileExempted(file);
-          if (fileExempted) {
-            console.log('File is exempted - allowing upload');
-            return; // Let upload proceed normally
-          }
-
-          // Prevent default upload behavior
-          e.preventDefault();
-          e.stopPropagation();
-
-          // Scan the file
-          await scanFile(file, e);
-        }
-      });
+        },
+        true
+      ); // Use capture phase to catch event first
     }
   });
 }
 
+function proceedWithOriginalUpload() {
+  console.log('Proceeding with original upload...');
+
+  if (window.piiShieldOriginalFile && window.piiShieldOriginalInput) {
+    const input = window.piiShieldOriginalInput;
+    const file = window.piiShieldOriginalFile;
+
+    // Create a new FileList with our file
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+
+    // Set the file back to the input
+    input.files = dataTransfer.files;
+
+    // Trigger the original change event if it existed
+    if (window.piiShieldOriginalOnChange) {
+      window.piiShieldOriginalOnChange.call(input, { target: input });
+    }
+
+    // Trigger change event for the input
+    const changeEvent = new Event('change', { bubbles: true });
+    input.dispatchEvent(changeEvent);
+
+    // Clean up
+    delete window.piiShieldOriginalFile;
+    delete window.piiShieldOriginalInput;
+    delete window.piiShieldOriginalOnChange;
+  }
+}
 // New scanFile function
 async function scanFile(file, originalEvent = null) {
   try {
