@@ -869,12 +869,7 @@ function showSidebar(findings) {
   });
 document.getElementById('ready-upload')?.addEventListener('click', () => {
   removeSidebar();
-  proceedWithOriginalUpload();
-
-  // Also handle form submission if needed
-  if (window.piiShieldFormContext) {
-    proceedWithFormSubmission();
-  }
+  insertDocumentSummary();
 });
 }
 
@@ -903,218 +898,9 @@ function proceedWithUpload() {
   console.log('Proceeding with upload...');
   proceedWithOriginalUpload();
 }
-function monitorFileInputs() {
-  document.querySelectorAll('input[type="file"]').forEach((input) => {
-    if (!input.hasAttribute('data-pii-monitored')) {
-      input.setAttribute('data-pii-monitored', 'true');
+// Old file input monitoring code removed - now using targeted injection system
 
-      // Store original handlers
-      const originalOnChange = input.onchange;
-      const originalHandlers = [];
-
-      // Capture all existing event listeners (if possible)
-      const events = ['change', 'input'];
-      events.forEach((eventType) => {
-        const originalHandler = input[`on${eventType}`];
-        if (originalHandler) {
-          originalHandlers.push({ type: eventType, handler: originalHandler });
-        }
-      });
-
-      // Remove original onchange to prevent immediate upload
-      input.onchange = null;
-
-      // Add our interceptor with highest priority
-      input.addEventListener(
-        'change',
-        async (e) => {
-          const file = e.target.files[0];
-          if (file) {
-            console.log('File intercepted:', file.name);
-
-            // Check exemptions first
-            const tabExempted = await isTabExempted();
-            const fileExempted = await isFileExempted(file);
-
-            if (tabExempted || fileExempted) {
-              console.log('Upload allowed - exemption exists');
-              // Restore original handlers and proceed
-              restoreOriginalHandlers(
-                input,
-                originalOnChange,
-                originalHandlers
-              );
-              return;
-            }
-
-            // BLOCK THE UPLOAD
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-
-            // Clear the input to prevent any form submission
-            const originalValue = input.value;
-            input.value = '';
-
-            // Store for later restoration
-            window.piiShieldContext = {
-              input: input,
-              file: file,
-              originalValue: originalValue,
-              originalOnChange: originalOnChange,
-              originalHandlers: originalHandlers,
-            };
-
-            // Start scanning process
-            await scanFile(file, e);
-          }
-        },
-        true
-      ); // Use capture phase
-    }
-  });
-}
-
-function restoreOriginalHandlers(input, originalOnChange, originalHandlers) {
-  // Restore original onchange
-  if (originalOnChange) {
-    input.onchange = originalOnChange;
-  }
-
-  // Restore other handlers
-  originalHandlers.forEach(({ type, handler }) => {
-    input[`on${type}`] = handler;
-  });
-}
-
-
-function proceedWithOriginalUpload() {
-  console.log('Proceeding with original upload...');
-
-  if (window.piiShieldContext) {
-    const { input, file, originalOnChange, originalHandlers } =
-      window.piiShieldContext;
-
-    // Create a new file input with the same attributes
-    const newInput = input.cloneNode(true);
-
-    // Create FileList with our file
-    const dataTransfer = new DataTransfer();
-    dataTransfer.items.add(file);
-
-    // Set the files
-    newInput.files = dataTransfer.files;
-    input.files = dataTransfer.files;
-    input.value = newInput.value;
-
-    // Restore original handlers
-    restoreOriginalHandlers(input, originalOnChange, originalHandlers);
-
-    // Trigger the original change event
-    if (originalOnChange) {
-      originalOnChange.call(input, { target: input, type: 'change' });
-    }
-
-    // Dispatch events
-    const changeEvent = new Event('change', {
-      bubbles: true,
-      cancelable: true,
-    });
-    const inputEvent = new Event('input', { bubbles: true, cancelable: true });
-
-    input.dispatchEvent(changeEvent);
-    input.dispatchEvent(inputEvent);
-
-    // Clean up
-    delete window.piiShieldContext;
-  }
-}
-
-
-// Add this function to monitor form submissions
-function monitorFormSubmissions() {
-  document.addEventListener('submit', async (e) => {
-    const form = e.target;
-    const fileInputs = form.querySelectorAll('input[type="file"]');
-    
-    for (const input of fileInputs) {
-      if (input.files && input.files.length > 0) {
-        const file = input.files[0];
-        
-        // Check if we need to scan this file
-        const tabExempted = await isTabExempted();
-        const fileExempted = await isFileExempted(file);
-        
-        if (!tabExempted && !fileExempted) {
-          // Block form submission and scan file
-          e.preventDefault();
-          e.stopPropagation();
-          e.stopImmediatePropagation();
-          
-          console.log('Form submission blocked for scanning');
-          
-          // Store form context for later submission
-          window.piiShieldFormContext = {
-            form: form,
-            originalSubmit: form.submit.bind(form)
-          };
-          
-          await scanFile(file, e);
-          return false;
-        }
-      }
-    }
-  }, true);
-}
-
-// Add form submission restoration
-function proceedWithFormSubmission() {
-  if (window.piiShieldFormContext) {
-    const { form, originalSubmit } = window.piiShieldFormContext;
-    
-    // Proceed with form submission
-    originalSubmit();
-    
-    // Clean up
-    delete window.piiShieldFormContext;
-  }
-}
-
-// New scanFile function
-async function scanFile(file, originalEvent = null) {
-  try {
-    console.log('Starting scan for:', file.name); // Debug log
-
-    // Show scanning overlay immediately
-    createScanningOverlay();
-
-    // Read and scan file
-    const content = await readFileContent(file);
-    console.log('File content length:', content.length); // Debug log
-    console.log('File content preview:', content.substring(0, 200)); // Debug log
-
-    const findings = scanForPII(content);
-    console.log('PII findings:', findings); // Debug log
-
-    // Store original event for later use
-    if (originalEvent) {
-      window.piiShieldOriginalEvent = originalEvent;
-      window.piiShieldOriginalFile = file;
-    }
-
-    // Update overlay with results after delay
-    setTimeout(() => {
-      updateOverlayWithResults(findings);
-      detectedPII = findings;
-
-      // Update stats
-      updateScanStats(findings);
-    }, 1500); // Realistic scanning time
-  } catch (error) {
-    console.error('Error scanning file:', error);
-    updateOverlayWithResults([]); // Show no findings on error
-  }
-}
+// Old scanFile function removed - now using handleDocumentUpload
 
 // New function to update overlay with results (prevents duplicate overlays)
 function updateOverlayWithResults(findings) {
@@ -1259,8 +1045,43 @@ function attachOverlayEventListeners(findings, hasPII) {
     });
   } else {
     document.getElementById('proceed-upload')?.addEventListener('click', () => {
+      insertDocumentSummary();
       removeOverlay();
     });
+  }
+}
+
+// Function to insert document summary into target element
+function insertDocumentSummary() {
+  if (window.piiShieldUploadContext) {
+    const { file, targetElement } = window.piiShieldUploadContext;
+    
+    const summary = `Document: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - Scanned ✅ No PII detected`;
+    
+    // Insert into target element based on its type
+    if (targetElement.tagName === 'TEXTAREA') {
+      // For textarea elements
+      const currentValue = targetElement.value;
+      targetElement.value = currentValue + (currentValue ? '\n\n' : '') + summary;
+      targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+    } else if (targetElement.contentEditable === 'true') {
+      // For contenteditable elements
+      const selection = window.getSelection();
+      const range = document.createRange();
+      
+      // Place cursor at end of content
+      range.selectNodeContents(targetElement);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      
+      // Insert content
+      const textToInsert = (targetElement.innerText ? '\n\n' : '') + summary;
+      document.execCommand('insertText', false, textToInsert);
+    }
+    
+    // Clean up context
+    delete window.piiShieldUploadContext;
   }
 }
 
@@ -1593,6 +1414,176 @@ function injectStyles() {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.5; }
     }
+
+    /* PII Shield Injection Button Styles */
+    .pii-shield-inject-btn {
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: inherit;
+    }
+
+    .pii-shield-inject-btn:hover {
+      transform: scale(1.1);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    }
+
+    .pii-shield-button-container {
+      pointer-events: none;
+    }
+
+    .pii-shield-button-container button {
+      pointer-events: auto;
+    }
+
+    /* Upload Modal Styles */
+    .pii-shield-upload-modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999999;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    .pii-shield-upload-modal {
+      background: white;
+      border-radius: 16px;
+      width: 500px;
+      max-width: 90vw;
+      max-height: 80vh;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      animation: modalSlideIn 0.3s ease-out;
+    }
+
+    @keyframes modalSlideIn {
+      from {
+        opacity: 0;
+        transform: scale(0.9) translateY(-20px);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+      }
+    }
+
+    .pii-shield-upload-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 24px;
+      border-bottom: 1px solid #e5e7eb;
+      background: linear-gradient(135deg, #f9fafb, #f3f4f6);
+    }
+
+    .pii-shield-upload-header h3 {
+      margin: 0;
+      color: #1f2937;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .pii-shield-close-modal {
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 8px;
+      background: white;
+      color: #6b7280;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.2s;
+    }
+
+    .pii-shield-close-modal:hover {
+      background: #f3f4f6;
+      color: #1f2937;
+    }
+
+    .pii-shield-upload-content {
+      padding: 24px;
+    }
+
+    .pii-shield-upload-area {
+      border: 2px dashed #d1d5db;
+      border-radius: 12px;
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #f9fafb;
+    }
+
+    .pii-shield-upload-area:hover {
+      border-color: #3b82f6;
+      background: #eff6ff;
+    }
+
+    .pii-shield-upload-area.drag-over {
+      border-color: #3b82f6;
+      background: #eff6ff;
+      transform: scale(1.02);
+    }
+
+    .pii-shield-upload-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .pii-shield-upload-prompt p {
+      margin: 0 0 8px 0;
+      color: #374151;
+      font-weight: 500;
+    }
+
+    .pii-shield-upload-prompt small {
+      color: #6b7280;
+      font-size: 13px;
+    }
+
+    .pii-shield-scanning {
+      text-align: center;
+      padding: 20px;
+    }
+
+    .pii-shield-spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #e5e7eb;
+      border-top: 3px solid #3b82f6;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 16px;
+    }
+
+    .pii-shield-error {
+      text-align: center;
+      padding: 20px;
+      color: #dc2626;
+    }
+
+    .pii-shield-error p {
+      margin: 0 0 16px 0;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -1815,13 +1806,293 @@ async function cleanupExemptions() {
 }
 
 
+// PII Shield Button Injection System
+function injectPIIShieldButtons() {
+  // Get current domain for site-specific targeting
+  const domain = window.location.hostname;
+  
+  // Site-specific selectors for better targeting
+  const siteSelectors = {
+    // Gmail
+    'mail.google.com': [
+      '[role="textbox"][contenteditable="true"]',
+      '.Am.Al.editable',
+      '[g_editable="true"]'
+    ],
+    // ChatGPT
+    'chat.openai.com': [
+      '[data-testid="textbox"]',
+      '#prompt-textarea',
+      'textarea[placeholder*="message"]'
+    ],
+    // Claude (Anthropic)
+    'claude.ai': [
+      '[data-testid="chat-input"]',
+      'textarea[placeholder*="Talk to Claude"]',
+      '[contenteditable="true"][role="textbox"]'
+    ],
+    // Slack
+    'slack.com': [
+      '[data-qa="message_input"]',
+      '.ql-editor[contenteditable="true"]',
+      '[role="textbox"][contenteditable="true"]'
+    ],
+    // Discord
+    'discord.com': [
+      '[class*="textArea"]',
+      '[placeholder*="Message"]',
+      '.markup [contenteditable="true"]'
+    ],
+    // WhatsApp Web
+    'web.whatsapp.com': [
+      '[data-testid="conversation-compose-box-input"]',
+      '[contenteditable="true"][role="textbox"]'
+    ],
+    // Microsoft Teams
+    'teams.microsoft.com': [
+      '[data-tid="ckeditor"]',
+      '[role="textbox"][contenteditable="true"]'
+    ],
+    // LinkedIn
+    'linkedin.com': [
+      '[role="textbox"][contenteditable="true"]',
+      '.ql-editor[contenteditable="true"]'
+    ],
+    // Twitter/X
+    'twitter.com': [
+      '[data-testid="tweetTextarea_0"]',
+      '[role="textbox"][contenteditable="true"]'
+    ],
+    'x.com': [
+      '[data-testid="tweetTextarea_0"]',
+      '[role="textbox"][contenteditable="true"]'
+    ]
+  };
 
+  // Get selectors for current site or use generic ones
+  let selectors = siteSelectors[domain] || [
+    // Generic fallback selectors
+    'textarea',
+    'div[contenteditable="true"]',
+    '[role="textbox"][contenteditable="true"]',
+    '[contenteditable="true"]'
+  ];
 
+  // Always include some common patterns
+  selectors = selectors.concat([
+    'textarea',
+    '[data-testid="textbox"]',
+    'div[contenteditable="true"]'
+  ]);
 
+  // Remove duplicates
+  selectors = [...new Set(selectors)];
 
+  selectors.forEach(selector => {
+    try {
+      const elements = document.querySelectorAll(selector);
+      elements.forEach(element => {
+        if (!element.hasAttribute('data-pii-shield-injected') && isValidTextArea(element)) {
+          injectButtonNearElement(element);
+          element.setAttribute('data-pii-shield-injected', 'true');
+        }
+      });
+    } catch (error) {
+      console.log('Selector error:', selector, error);
+    }
+  });
+}
+
+function isValidTextArea(element) {
+  // Check if element is visible and suitable for document upload
+  const rect = element.getBoundingClientRect();
+  const isVisible = rect.width > 50 && rect.height > 20;
+  const isNotScript = !element.closest('script, style, noscript');
+  const isNotHidden = getComputedStyle(element).display !== 'none';
+  
+  return isVisible && isNotScript && isNotHidden;
+}
+
+function injectButtonNearElement(targetElement) {
+  // Create PII Shield button
+  const button = document.createElement('button');
+  button.className = 'pii-shield-inject-btn';
+  button.innerHTML = '🛡️';
+  button.title = 'PII Shield - Scan Document';
+  button.type = 'button';
+  
+  // Position button relative to target element
+  const rect = targetElement.getBoundingClientRect();
+  const container = document.createElement('div');
+  container.className = 'pii-shield-button-container';
+  container.style.cssText = `
+    position: absolute;
+    z-index: 999999;
+    top: ${window.scrollY + rect.bottom - 35}px;
+    left: ${window.scrollX + rect.right - 35}px;
+    pointer-events: auto;
+  `;
+  
+  container.appendChild(button);
+  document.body.appendChild(container);
+  
+  // Store reference to target element
+  button.targetElement = targetElement;
+  
+  // Add click handler
+  button.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showDocumentUploadModal(targetElement);
+  });
+  
+  // Update position on scroll/resize
+  const updatePosition = () => {
+    const newRect = targetElement.getBoundingClientRect();
+    container.style.top = `${window.scrollY + newRect.bottom - 35}px`;
+    container.style.left = `${window.scrollX + newRect.right - 35}px`;
+  };
+  
+  window.addEventListener('scroll', updatePosition);
+  window.addEventListener('resize', updatePosition);
+  
+  // Clean up when target element is removed
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.removedNodes.forEach((node) => {
+        if (node === targetElement || (node.contains && node.contains(targetElement))) {
+          container.remove();
+          observer.disconnect();
+        }
+      });
+    });
+  });
+  
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
+function showDocumentUploadModal(targetElement) {
+  // Remove any existing modal
+  removeDocumentUploadModal();
+  
+  // Create modal overlay
+  const modalOverlay = document.createElement('div');
+  modalOverlay.className = 'pii-shield-upload-modal-overlay';
+  modalOverlay.innerHTML = `
+    <div class="pii-shield-upload-modal">
+      <div class="pii-shield-upload-header">
+        <h3>🛡️ PII Shield Document Scanner</h3>
+        <button class="pii-shield-close-modal" type="button">✕</button>
+      </div>
+      <div class="pii-shield-upload-content">
+        <div class="pii-shield-upload-area" id="pii-upload-area">
+          <input type="file" id="pii-file-input" accept=".txt,.pdf,.doc,.docx,.csv,.json" style="display: none;">
+          <div class="pii-shield-upload-prompt">
+            <div class="pii-shield-upload-icon">📄</div>
+            <p>Click to select or drag & drop your document</p>
+            <small>Supported: .txt, .pdf, .doc, .docx, .csv, .json</small>
+          </div>
+        </div>
+        <div class="pii-shield-upload-status" id="pii-upload-status" style="display: none;"></div>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(modalOverlay);
+  
+  // Add event listeners
+  const closeBtn = modalOverlay.querySelector('.pii-shield-close-modal');
+  const fileInput = document.getElementById('pii-file-input');
+  const uploadArea = document.getElementById('pii-upload-area');
+  const statusDiv = document.getElementById('pii-upload-status');
+  
+  closeBtn.addEventListener('click', removeDocumentUploadModal);
+  modalOverlay.addEventListener('click', (e) => {
+    if (e.target === modalOverlay) {
+      removeDocumentUploadModal();
+    }
+  });
+  
+  // File upload handling
+  uploadArea.addEventListener('click', () => fileInput.click());
+  
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      await handleDocumentUpload(file, statusDiv, targetElement);
+    }
+  });
+  
+  // Drag and drop handling
+  uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('drag-over');
+  });
+  
+  uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('drag-over');
+  });
+  
+  uploadArea.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      await handleDocumentUpload(file, statusDiv, targetElement);
+    }
+  });
+}
+
+async function handleDocumentUpload(file, statusDiv, targetElement) {
+  try {
+    // Show scanning status
+    statusDiv.style.display = 'block';
+    statusDiv.innerHTML = `
+      <div class="pii-shield-scanning">
+        <div class="pii-shield-spinner"></div>
+        <p>Scanning "${file.name}" for sensitive information...</p>
+      </div>
+    `;
+    
+    // Store the file and target element for later use
+    window.piiShieldUploadContext = {
+      file: file,
+      targetElement: targetElement
+    };
+    
+    // Read and scan file
+    const content = await readFileContent(file);
+    const findings = scanForPII(content);
+    
+    // Hide modal and show results
+    removeDocumentUploadModal();
+    
+    // Show scan results
+    createOverlay(findings);
+    detectedPII = findings;
+    
+    // Update stats
+    updateScanStats(findings);
+    
+  } catch (error) {
+    console.error('Error scanning document:', error);
+    statusDiv.innerHTML = `
+      <div class="pii-shield-error">
+        <p>❌ Error scanning document: ${error.message}</p>
+        <button onclick="removeDocumentUploadModal()" class="pii-shield-btn secondary">Close</button>
+      </div>
+    `;
+  }
+}
+
+function removeDocumentUploadModal() {
+  const modal = document.querySelector('.pii-shield-upload-modal-overlay');
+  if (modal) {
+    modal.remove();
+  }
+}
 
 // Initialize
-// Replace your initialize function with this:
 async function initialize() {
   if (!document.body) {
     setTimeout(initialize, 100);
@@ -1836,11 +2107,11 @@ async function initialize() {
   }
 
   injectStyles();
-  monitorFileInputs();
-  monitorFormSubmissions(); // Add this line
+  injectPIIShieldButtons();
 
+  // Monitor for new elements and inject buttons
   const observer = new MutationObserver(() => {
-    monitorFileInputs();
+    injectPIIShieldButtons();
   });
 
   observer.observe(document.body, {
